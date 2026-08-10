@@ -1749,24 +1749,29 @@ Expected: 4 passed
 - [ ] **Step 7: Manual smoke check that the camera and model actually work**
 
 ```bash
-.venv/bin/python -c "
+PYTHONPATH=src .venv/bin/python -c "
 import time
 from gesture_control.capture import Camera
 from gesture_control.landmarks import HandTracker
 from gesture_control.features import extract
-import sys; sys.path.insert(0, 'src')
 tr = HandTracker()
-with Camera() as cam:
-    t0 = time.monotonic()
-    for _ in range(60):
-        ok, frame = cam.read()
-        if not ok: continue
-        f = extract(tr.detect(frame, time.monotonic() - t0))
-        if f.present:
-            print(f'pinch={f.pinch_ratio:.2f} fingers={f.fingers_up} palm={f.palm_facing}')
-tr.close()
+try:
+    with Camera() as cam:
+        t0 = time.monotonic()
+        for _ in range(60):
+            ok, frame = cam.read()
+            if not ok: continue
+            f = extract(tr.detect(frame, time.monotonic() - t0))
+            if f.present:
+                print(f'pinch={f.pinch_ratio:.2f} fingers={f.fingers_up} palm={f.palm_facing}')
+finally:
+    tr.close()
 "
 ```
+
+`PYTHONPATH=src` is required: the project is not installed into the venv, so
+`gesture_control` is importable only via that path. The `finally` guarantees the
+MediaPipe landmarker is closed even if the camera raises.
 
 Hold your hand up, palm to camera. Expected: lines printing a pinch ratio that drops below 0.35 when you pinch and rises above 0.45 when you open. If macOS has not yet prompted for camera access, this is the call that triggers it.
 
