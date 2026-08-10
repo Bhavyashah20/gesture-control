@@ -94,3 +94,108 @@ def test_virtual_position_accumulates_moves():
     sm.update(feat(t, pinch=0.2))
     sm.update(feat(t + 0.1, pinch=0.2, ref=(0.6, 0.5)))
     assert sm.virtual_pos.x > 0.0
+
+
+from gesture_control.types import Click, DragEnd, DragStart
+
+
+def test_quick_pinch_release_emits_single_click():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    out = sm.update(feat(t + 0.10, pinch=0.9))
+    assert out == [Click(1)]
+
+
+def test_slow_release_is_not_a_click():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    out = sm.update(feat(t + 0.30, pinch=0.9))
+    assert out == []
+
+
+def test_release_after_moving_far_is_not_a_click():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.05, pinch=0.2, ref=(0.75, 0.5)))
+    out = sm.update(feat(t + 0.10, pinch=0.9))
+    assert not any(isinstance(i, Click) for i in out)
+
+
+def test_two_quick_taps_emit_click_two():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    assert sm.update(feat(t + 0.08, pinch=0.9)) == [Click(1)]
+    sm.update(feat(t + 0.20, pinch=0.2))
+    assert sm.update(feat(t + 0.28, pinch=0.9)) == [Click(2)]
+
+
+def test_slow_second_tap_is_a_fresh_single_click():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    assert sm.update(feat(t + 0.08, pinch=0.9)) == [Click(1)]
+    sm.update(feat(t + 1.00, pinch=0.2))
+    assert sm.update(feat(t + 1.08, pinch=0.9)) == [Click(1)]
+
+
+def test_triple_tap_does_not_emit_click_three():
+    sm = StateMachine()
+    t = arm(sm)
+    for i in range(3):
+        sm.update(feat(t + i * 0.20, pinch=0.2))
+        out = sm.update(feat(t + i * 0.20 + 0.08, pinch=0.9))
+        assert out[0].n in (1, 2)
+
+
+def test_holding_pinch_still_starts_a_drag():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    out = sm.update(feat(t + 0.45, pinch=0.2))
+    assert DragStart() in out
+    assert sm.state is State.DRAG
+
+
+def test_drag_emits_moves_then_one_drag_end():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.45, pinch=0.2))
+    mid = sm.update(feat(t + 0.55, pinch=0.2, ref=(0.6, 0.5)))
+    assert any(isinstance(i, Move) for i in mid)
+    end = sm.update(feat(t + 0.70, pinch=0.9))
+    assert end == [DragEnd()]
+    assert sm.state is State.ARMED_IDLE
+
+
+def test_moving_before_the_dwell_prevents_a_drag():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.10, pinch=0.2, ref=(0.80, 0.5)))
+    out = sm.update(feat(t + 0.50, pinch=0.2))
+    assert not any(isinstance(i, DragStart) for i in out)
+    assert sm.state is State.TRACKING
+
+
+def test_hand_vanishing_mid_drag_releases_the_button():
+    """The stuck-button guard. Without this macOS keeps the button held.
+
+    The absent frames must keep the pinch CLOSED. If they carried an open
+    pinch, the ordinary release path would end the drag and the watchdog
+    would never be exercised.
+    """
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.45, pinch=0.2))
+    assert sm.state is State.DRAG
+    sm.update(feat(t + 0.60, pinch=0.2, present=False))
+    assert sm.state is State.DRAG  # still held, within DISARM_S
+    out = sm.update(feat(t + 1.20, pinch=0.2, present=False))
+    assert DragEnd() in out
+    assert sm.state is State.DISARMED
