@@ -371,8 +371,12 @@ here.
 
 ## Tuning parameters
 
-Every value below is a starting estimate to be refined against recordings, not a
-derived constant. They live in one `config.py` so tuning never means hunting
+The click and drag values below are no longer estimates: they were calibrated
+against real recordings on 2026-08-10. The first guesses were badly wrong —
+`TAP_MAX_S` at 250 ms rejected every one of five deliberate taps (which held
+370-470 ms), and `TAP_MAX_PX` at 15 px sat in the middle of the observed
+12.8-16.7 px travel distribution, the least stable place a threshold can be.
+The remaining values are still estimates. They live in one `config.py` so tuning never means hunting
 through logic.
 
 | Parameter | Start | Governs |
@@ -380,9 +384,9 @@ through logic.
 | `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | pinch detection, with hysteresis |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `TAP_MAX_MS` | 250 | click vs. cursor move |
-| `TAP_MAX_PX` | 15 | click vs. cursor move |
-| `DOUBLE_MS` / `DOUBLE_PX` | 350 / 30 | double-click recognition |
-| `DRAG_DWELL_MS` | 400 | drag vs. move |
+| `TAP_MAX_PX` | 25 | click vs. cursor move |
+| `DOUBLE_MS` / `DOUBLE_PX` | 450 / 50 | double-click recognition |
+| `DRAG_DWELL_MS` | 700 | drag vs. move |
 | `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |
 | `SCROLL_GAIN` | 900 | scroll speed |

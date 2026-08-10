@@ -243,11 +243,15 @@ HAND_SCALE_MAX = 0.45
 FINGER_EXT_RATIO = 1.15
 ARM_FINGERS_MIN = 3
 
-TAP_MAX_S = 0.250
-TAP_MAX_PX = 15.0
-DOUBLE_MAX_S = 0.350
-DOUBLE_MAX_PX = 30.0
-DRAG_DWELL_S = 0.400
+# Calibrated against real recordings, not estimated. Observed on a live hand:
+# deliberate taps hold 0.37-0.47 s (the original 0.250 rejected every one of
+# them), tap travel reaches 16.7 px (the original 15.0 sat mid-distribution),
+# and a real double-click gap was 0.399 s (the original 0.350 just missed it).
+TAP_MAX_S = 0.550
+TAP_MAX_PX = 25.0
+DOUBLE_MAX_S = 0.450
+DOUBLE_MAX_PX = 50.0
+DRAG_DWELL_S = 0.700
 
 BASE_GAIN_PX = 1600.0
 ACCEL_MIN = 0.35
@@ -1130,7 +1134,7 @@ def test_slow_release_is_not_a_click():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + 0.30, pinch=0.9))
+    out = sm.update(feat(t + config.TAP_MAX_S + 0.05, pinch=0.9))
     assert out == []
 
 
@@ -1174,7 +1178,7 @@ def test_holding_pinch_still_starts_a_drag():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + 0.45, pinch=0.2))
+    out = sm.update(feat(t + config.DRAG_DWELL_S + 0.05, pinch=0.2))
     assert DragStart() in out
     assert sm.state is State.DRAG
 
@@ -1182,11 +1186,12 @@ def test_holding_pinch_still_starts_a_drag():
 def test_drag_emits_moves_then_one_drag_end():
     sm = StateMachine()
     t = arm(sm)
+    d = config.DRAG_DWELL_S
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.45, pinch=0.2))
-    mid = sm.update(feat(t + 0.55, pinch=0.2, ref=(0.6, 0.5)))
+    sm.update(feat(t + d + 0.05, pinch=0.2))
+    mid = sm.update(feat(t + d + 0.15, pinch=0.2, ref=(0.6, 0.5)))
     assert any(isinstance(i, Move) for i in mid)
-    end = sm.update(feat(t + 0.70, pinch=0.9))
+    end = sm.update(feat(t + d + 0.30, pinch=0.9))
     assert end == [DragEnd()]
     assert sm.state is State.ARMED_IDLE
 
@@ -1210,12 +1215,13 @@ def test_hand_vanishing_mid_drag_releases_the_button():
     """
     sm = StateMachine()
     t = arm(sm)
+    d = config.DRAG_DWELL_S
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.45, pinch=0.2))
+    sm.update(feat(t + d + 0.05, pinch=0.2))
     assert sm.state is State.DRAG
-    sm.update(feat(t + 0.60, pinch=0.2, present=False))
+    sm.update(feat(t + d + 0.20, pinch=0.2, present=False))
     assert sm.state is State.DRAG  # still held, within DISARM_S
-    out = sm.update(feat(t + 1.20, pinch=0.2, present=False))
+    out = sm.update(feat(t + d + 0.20 + config.DISARM_S + 0.10, pinch=0.2, present=False))
     assert DragEnd() in out
     assert sm.state is State.DISARMED
 ```
