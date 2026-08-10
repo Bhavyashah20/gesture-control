@@ -248,16 +248,28 @@ Fires when, with the open-palm posture held: horizontal velocity of `cursor_ref`
 exceeds 0.8 frame-widths/sec sustained for ≥ 100 ms, and net horizontal displacement
 exceeds 0.20 frame widths. Rightward sweep emits `Space(right)` → `Ctrl+→`.
 
+Swipe reads the **raw** `cursor_ref`, not the filtered value the cursor uses. A sweep
+is a gross, high-amplitude gesture, so smoothing only eats the displacement being
+measured; reading raw also decouples swipe sensitivity from cursor-filter tuning.
+
 An 800 ms cooldown follows every emission. Without it, a single physical sweep
 produces many frames above threshold and skips three Spaces instead of one.
 
 ## Filtering and pointer gain
 
 **One Euro filter** on `cursor_ref` before any delta is computed. Parameters:
-`min_cutoff = 1.0`, `beta = 0.007`, `d_cutoff = 1.0`. This filter is chosen over a
+`min_cutoff = 1.0`, `beta = 0.7`, `d_cutoff = 1.0`. This filter is chosen over a
 moving average because it adapts: heavy smoothing when the hand is nearly still
 (killing tremor), light smoothing when moving fast (avoiding lag). A fixed-window
 average forces a choice between a jittery cursor and a laggy one.
+
+**`beta` is scale-dependent, and 0.7 is the value for *this* coordinate space.**
+The 0.007 quoted throughout the literature assumes pixel-domain input where speeds
+run to hundreds of units per second. Our input is normalized to `[0, 1]`, where
+speeds are roughly 1–5 per second, making the adaptive term `beta × speed` about
+0.02 — inert. At that value the filter silently degenerates into a fixed 1 Hz
+low-pass with full lag at every speed, which discards the entire reason for
+choosing it. Any future change to the coordinate normalization must revisit `beta`.
 
 **Adaptive gain**, mirroring macOS pointer acceleration:
 
@@ -376,7 +388,7 @@ through logic.
 | `SCROLL_GAIN` | 900 | scroll speed |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |
 | `SWIPE_COOLDOWN_MS` | 800 | prevents multi-Space skips |
-| `EURO_MIN_CUTOFF` / `EURO_BETA` | 1.0 / 0.007 | jitter vs. lag |
+| `EURO_MIN_CUTOFF` / `EURO_BETA` | 1.0 / 0.7 | jitter vs. lag |
 
 ## Repository layout
 

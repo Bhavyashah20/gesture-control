@@ -264,7 +264,7 @@ SWIPE_WINDOW_S = 0.350
 SWIPE_COOLDOWN_S = 0.800
 
 EURO_MIN_CUTOFF = 1.0
-EURO_BETA = 0.007
+EURO_BETA = 0.7
 EURO_D_CUTOFF = 1.0
 
 CAMERA_INDEX = 0
@@ -893,7 +893,10 @@ def test_disarmed_emits_nothing():
 
 def test_arms_after_dwell():
     sm = StateMachine()
-    arm(sm)
+    sm.update(feat(0.0))
+    assert sm.state is State.DISARMED
+    sm.update(feat(0.4))
+    assert sm.state is State.ARMED_IDLE
 
 
 def test_armed_idle_does_not_move_the_cursor():
@@ -1317,6 +1320,8 @@ git commit -m "feat: add click, double-click, and drag disambiguation"
 
 **Two rules that prevent misfires.** Swipe is evaluated **only in `ARMED_IDLE`**, so a fast drag can never be read as a Space switch. And every emitted swipe starts an 800 ms cooldown — one physical sweep produces many frames above the velocity threshold, so without a lockout a single sweep skips three Spaces.
 
+**Swipe reads the raw `f.cursor_ref`, not the filtered `ref`.** A sweep is a gross, high-amplitude gesture; smoothing only eats the displacement the detector is trying to measure. Reading raw also decouples swipe sensitivity from cursor-filter tuning, so a later change to `EURO_BETA` cannot silently break Space switching.
+
 - [ ] **Step 1: Write the failing tests (append to `tests/test_state_machine.py`)**
 
 ```python
@@ -1436,8 +1441,8 @@ Add `from collections import deque` at the top, and extend the `types` import wi
 - [ ] **Step 4: Add the swipe detector**
 
 ```python
-    def _detect_swipe(self, f: Features, ref: Point2) -> list[Intent]:
-        self._swipe_hist.append((f.t, ref.x))
+    def _detect_swipe(self, f: Features) -> list[Intent]:
+        self._swipe_hist.append((f.t, f.cursor_ref.x))
         while self._swipe_hist and f.t - self._swipe_hist[0][0] > config.SWIPE_WINDOW_S:
             self._swipe_hist.popleft()
 
@@ -1448,7 +1453,7 @@ Add `from collections import deque` at the top, and extend the `types` import wi
 
         t0, x0 = self._swipe_hist[0]
         elapsed = f.t - t0
-        disp = ref.x - x0
+        disp = f.cursor_ref.x - x0
         if elapsed < config.SWIPE_HOLD_S:
             return []
         if abs(disp) < config.SWIPE_DIST or abs(disp) / elapsed < config.SWIPE_VEL:
@@ -1480,7 +1485,7 @@ Add `from collections import deque` at the top, and extend the `types` import wi
                 return intents
 
             self._scroll_since = None
-            return intents + self._detect_swipe(f, ref)
+            return intents + self._detect_swipe(f)
 
         if self._state is State.SCROLL:
             if f.fingers_up != (True, True, False, False):
@@ -1953,7 +1958,7 @@ def test_drag_yields_one_start_and_one_end():
 
 
 def test_reaching_past_camera_yields_nothing():
-    out = [i for i in _replay("reaching_past") if not isinstance(i, type(None))]
+    out = _replay("reaching_past")
     assert [i for i in out if isinstance(i, (Click, DragStart, Space))] == []
 
 
