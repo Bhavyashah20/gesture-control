@@ -585,12 +585,22 @@ def test_disarms_after_hand_absent_for_dwell():
 
 
 def test_brief_dropout_does_not_disarm():
+    """A reconnection must genuinely clear the loss timer, not merely postpone it.
+
+    Checking only that the gate is still armed while the hand is present proves
+    nothing: that path never reads the loss timer. A second absence is required
+    to observe whether the first one was actually cleared.
+    """
     g = Gate()
     g.update(feat(0.00))
     g.update(feat(0.40))
-    g.update(feat(0.50, present=False))
-    g.update(feat(0.60))
-    assert g.update(feat(2.00)) is True
+    g.update(feat(0.50, present=False))  # first loss starts at 0.50
+    g.update(feat(0.60))                 # reconnect: timer must be cleared here
+    g.update(feat(0.90, present=False))  # second loss starts at 0.90
+    # 1.30 - 0.90 = 0.40s, under DISARM_S. A stale timer from 0.50 would read
+    # 0.80s and wrongly disarm.
+    assert g.update(feat(1.30, present=False)) is True
+    assert g.update(feat(1.45, present=False)) is False  # 0.55s, over DISARM_S
 
 
 def test_disarms_when_palm_turns_away():
