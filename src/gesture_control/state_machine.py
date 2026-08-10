@@ -152,7 +152,7 @@ class StateMachine:
                 self._state = State.ARMED_IDLE
                 return intents
             px = dyn * config.SCROLL_GAIN
-            if abs(px) >= 1.0:
+            if abs(px) >= config.SCROLL_MIN_PX:
                 intents.append(Scroll(px))
             return intents
 
