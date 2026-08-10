@@ -1201,14 +1201,20 @@ def test_moving_before_the_dwell_prevents_a_drag():
 
 
 def test_hand_vanishing_mid_drag_releases_the_button():
-    """The stuck-button guard. Without this macOS keeps the button held."""
+    """The stuck-button guard. Without this macOS keeps the button held.
+
+    The absent frames must keep the pinch CLOSED. If they carried an open
+    pinch, the ordinary release path would end the drag and the watchdog
+    would never be exercised.
+    """
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
     sm.update(feat(t + 0.45, pinch=0.2))
     assert sm.state is State.DRAG
-    sm.update(feat(t + 0.60, present=False))
-    out = sm.update(feat(t + 1.20, present=False))
+    sm.update(feat(t + 0.60, pinch=0.2, present=False))
+    assert sm.state is State.DRAG  # still held, within DISARM_S
+    out = sm.update(feat(t + 1.20, pinch=0.2, present=False))
     assert DragEnd() in out
     assert sm.state is State.DISARMED
 ```
