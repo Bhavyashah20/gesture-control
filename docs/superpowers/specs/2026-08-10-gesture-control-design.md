@@ -383,7 +383,6 @@ through logic.
 |---|---|---|
 | `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | pinch detection, with hysteresis |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
-| `TAP_MAX_MS` | 250 | click vs. cursor move |
 | `TAP_MAX_S` | 550 | click vs. cursor move |
 | `TAP_MAX_PX` | 25 | click vs. cursor move |
 | `DOUBLE_MS` / `DOUBLE_PX` | 450 / 50 | double-click recognition |
