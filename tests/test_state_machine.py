@@ -199,3 +199,101 @@ def test_hand_vanishing_mid_drag_releases_the_button():
     out = sm.update(feat(t + 1.20, pinch=0.2, present=False))
     assert DragEnd() in out
     assert sm.state is State.DISARMED
+
+
+from gesture_control.types import Scroll, Space
+
+TWO = (True, True, False, False)
+
+
+def test_two_finger_posture_enters_scroll_after_dwell():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.25, fingers=TWO))
+    assert sm.state is State.SCROLL
+
+
+def test_brief_two_finger_flash_does_not_enter_scroll():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.10, fingers=TWO))
+    assert sm.state is State.ARMED_IDLE
+
+
+def test_scroll_emits_on_vertical_motion():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.25, fingers=TWO))
+    out = sm.update(feat(t + 0.35, fingers=TWO, ref=(0.5, 0.6)))
+    scrolls = [i for i in out if isinstance(i, Scroll)]
+    assert len(scrolls) == 1
+    assert scrolls[0].dy != 0.0
+
+
+def test_scroll_ignores_horizontal_motion():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.25, fingers=TWO))
+    out = sm.update(feat(t + 0.35, fingers=TWO, ref=(0.9, 0.5)))
+    assert not any(isinstance(i, Scroll) for i in out)
+
+
+def test_losing_two_finger_posture_leaves_scroll():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.25, fingers=TWO))
+    sm.update(feat(t + 0.40))
+    assert sm.state is State.ARMED_IDLE
+
+
+def _sweep(sm, t, x_from, x_to, steps=8, span=0.20):
+    """Drive a smooth horizontal sweep. Returns all intents emitted."""
+    out = []
+    for i in range(steps + 1):
+        x = x_from + (x_to - x_from) * i / steps
+        out += sm.update(feat(t + span * i / steps, ref=(x, 0.5)))
+    return out
+
+
+def test_fast_sweep_right_emits_space_right():
+    sm = StateMachine()
+    t = arm(sm)
+    out = _sweep(sm, t, 0.20, 0.80)
+    assert Space("right") in out
+
+
+def test_fast_sweep_left_emits_space_left():
+    sm = StateMachine()
+    t = arm(sm)
+    out = _sweep(sm, t, 0.80, 0.20)
+    assert Space("left") in out
+
+
+def test_one_sweep_emits_exactly_one_space():
+    sm = StateMachine()
+    t = arm(sm)
+    out = _sweep(sm, t, 0.20, 0.80)
+    assert len([i for i in out if isinstance(i, Space)]) == 1
+
+
+def test_slow_drift_does_not_emit_space():
+    sm = StateMachine()
+    t = arm(sm)
+    out = _sweep(sm, t, 0.20, 0.80, steps=40, span=4.0)
+    assert not any(isinstance(i, Space) for i in out)
+
+
+def test_sweep_while_pinched_does_not_emit_space():
+    """A fast drag must never be read as a Space switch."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    out = []
+    for i in range(9):
+        out += sm.update(feat(t + 0.02 * i, pinch=0.2, ref=(0.2 + 0.075 * i, 0.5)))
+    assert not any(isinstance(i, Space) for i in out)

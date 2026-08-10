@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from enum import Enum, auto
 
 from . import config
 from .filters import Point2Filter, apply_gain
 from .gate import Gate
-from .types import Click, DragEnd, DragStart, Features, Intent, Move, Point2
+from .types import Click, DragEnd, DragStart, Features, Intent, Move, Point2, Scroll, Space
 
 
 class State(Enum):
@@ -32,6 +33,9 @@ class StateMachine:
         self._pinch_travel = 0.0
         self._last_click_t: float | None = None
         self._last_click_pos: Point2 | None = None
+        self._scroll_since: float | None = None
+        self._swipe_hist: deque[tuple[float, float]] = deque()
+        self._swipe_last: float | None = None
 
     @property
     def state(self) -> State:
@@ -76,6 +80,28 @@ class StateMachine:
         self._last_click_pos = self._virtual if n == 1 else None
         return [Click(n)]
 
+    def _detect_swipe(self, f: Features) -> list[Intent]:
+        self._swipe_hist.append((f.t, f.cursor_ref.x))
+        while self._swipe_hist and f.t - self._swipe_hist[0][0] > config.SWIPE_WINDOW_S:
+            self._swipe_hist.popleft()
+
+        if self._swipe_last is not None and f.t - self._swipe_last < config.SWIPE_COOLDOWN_S:
+            return []
+        if sum(f.fingers_up) < config.ARM_FINGERS_MIN or len(self._swipe_hist) < 2:
+            return []
+
+        t0, x0 = self._swipe_hist[0]
+        elapsed = f.t - t0
+        disp = f.cursor_ref.x - x0
+        if elapsed < config.SWIPE_HOLD_S:
+            return []
+        if abs(disp) < config.SWIPE_DIST or abs(disp) / elapsed < config.SWIPE_VEL:
+            return []
+
+        self._swipe_last = f.t
+        self._swipe_hist.clear()
+        return [Space("right" if disp > 0.0 else "left")]
+
     def update(self, f: Features) -> list[Intent]:
         intents: list[Intent] = []
         armed = self._gate.update(f)
@@ -106,6 +132,28 @@ class StateMachine:
                 self._state = State.TRACKING
                 self._pinch_t0 = f.t
                 self._pinch_travel = 0.0
+                self._scroll_since = None
+                self._swipe_hist.clear()
+                return intents
+
+            if f.fingers_up == (True, True, False, False):
+                if self._scroll_since is None:
+                    self._scroll_since = f.t
+                elif f.t - self._scroll_since >= config.SCROLL_DWELL_S:
+                    self._state = State.SCROLL
+                    self._scroll_since = None
+                return intents
+
+            self._scroll_since = None
+            return intents + self._detect_swipe(f)
+
+        if self._state is State.SCROLL:
+            if f.fingers_up != (True, True, False, False):
+                self._state = State.ARMED_IDLE
+                return intents
+            px = dyn * config.SCROLL_GAIN
+            if abs(px) >= 1.0:
+                intents.append(Scroll(px))
             return intents
 
         if self._state is State.TRACKING:
