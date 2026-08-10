@@ -182,7 +182,7 @@ All states fall back to `ArmedIdle` when their triggering posture ends, and to
 | `ArmedIdle` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
 | `ArmedIdle` | `ArmedIdle` | horizontal sweep → emit `Space` |
 | `Tracking` | `ArmedIdle` | `pinch_ratio` > 0.45 (release); may emit `Click` |
-| `Tracking` | `Drag` | pinch held > 400 ms with total movement < 15 px; emit `DragStart` |
+| `Tracking` | `Drag` | pinch held > 700 ms with total movement < 25 px; emit `DragStart` |
 | `Drag` | `ArmedIdle` | `pinch_ratio` > 0.45; emit `DragEnd` |
 | `Scroll` | `ArmedIdle` | scroll posture lost |
 | any | `Disarmed` | posture gate disarms; releases any held button first |
@@ -207,10 +207,10 @@ at pinch-down and decides from what follows:
 
 | Outcome | Rule |
 |---|---|
-| Click | released within 250 ms, having moved < 15 px |
-| Double-click | a Click whose predecessor ended < 350 ms ago and < 30 px away |
+| Click | released within 550 ms, having moved < 25 px |
+| Double-click | a Click whose predecessor ended < 450 ms ago and < 50 px away |
 | Cursor move | moved > 15 px before release — no button event ever fires |
-| Drag | held > 400 ms while staying under 15 px, then movement drags |
+| Drag | held > 700 ms while staying under 25 px, then movement drags |
 
 All distances here are **cursor screen pixels after gain is applied**, accumulated
 since pinch-down — not raw hand displacement. Measuring post-gain means the click
@@ -384,6 +384,7 @@ through logic.
 | `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | pinch detection, with hysteresis |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `TAP_MAX_MS` | 250 | click vs. cursor move |
+| `TAP_MAX_S` | 550 | click vs. cursor move |
 | `TAP_MAX_PX` | 25 | click vs. cursor move |
 | `DOUBLE_MS` / `DOUBLE_PX` | 450 / 50 | double-click recognition |
 | `DRAG_DWELL_MS` | 700 | drag vs. move |
