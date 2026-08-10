@@ -2426,21 +2426,38 @@ Expected: 4 passed
 - [ ] **Step 5: Manual smoke check**
 
 ```bash
-.venv/bin/python -c "
-import sys, itertools; sys.path.insert(0, 'src')
+PYTHONPATH=src .venv/bin/python -c "
+import itertools
 from gesture_control.hud import Hud
 from gesture_control.state_machine import State
-cycle = itertools.cycle(list(State))
+
+states = list(State)
+cycle = itertools.cycle(states)
+seen = []
 h = Hud(on_tick=lambda: None, tick_ms=500)
+
 def step():
-    h.set_state(next(cycle), True)
-    h._root.after(500, step)
-h._root.after(500, step)
+    s = next(cycle)
+    seen.append(s.name)
+    h.set_state(s, True)
+    if len(seen) >= len(states):
+        h.stop()
+    else:
+        h._root.after(400, step)
+
+h._root.after(400, step)
 h.run()
+print('cycled through:', seen)
 "
 ```
 
-Expected: a small pill in the top-left corner cycling through the five states with changing colours. Press `Esc` to close it.
+Expected: a small pill appears in the top-left corner, steps through all five
+states with changing colours, then closes itself, printing
+`cycled through: ['DISARMED', 'ARMED_IDLE', 'TRACKING', 'DRAG', 'SCROLL']`.
+
+The check must terminate on its own. An earlier version ended with a bare
+`h.run()` and told the operator to press `Esc`, which blocks forever when run
+non-interactively.
 
 - [ ] **Step 6: Commit**
 
