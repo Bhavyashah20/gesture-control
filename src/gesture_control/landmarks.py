@@ -49,14 +49,29 @@ class HandTracker:
             min_tracking_confidence=0.5,
         )
         self._landmarker = HandLandmarker.create_from_options(options)
+        self._last_ms = -1
+
+    def _next_ms(self, t: float) -> int:
+        """Strictly increasing millisecond stamps.
+
+        VIDEO mode rejects a timestamp that is not greater than its
+        predecessor, and flooring float seconds to milliseconds can repeat a
+        value when two frames land inside the same millisecond. Forcing the
+        increase keeps both live capture and replay deterministic.
+        """
+        ms = max(int(t * 1000), self._last_ms + 1)
+        self._last_ms = ms
+        return ms
 
     def detect(self, bgr: Any, t: float) -> HandFrame:
         import cv2
 
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
-        result = self._landmarker.detect_for_video(image, int(t * 1000))
+        result = self._landmarker.detect_for_video(image, self._next_ms(t))
         return to_hand_frame(result, t)
 
     def close(self) -> None:
-        self._landmarker.close()
+        if self._landmarker is not None:
+            self._landmarker.close()
+            self._landmarker = None

@@ -1,4 +1,4 @@
-from gesture_control.landmarks import to_hand_frame
+from gesture_control.landmarks import HandTracker, to_hand_frame
 
 
 class FakeLandmark:
@@ -42,3 +42,18 @@ def test_missing_handedness_defaults_to_right():
     pts = [FakeLandmark(0.0, 0.0, 0.0) for _ in range(21)]
     f = to_hand_frame(FakeResult([pts], []), t=0.0)
     assert f.handedness == "Right"
+
+
+def test_next_ms_is_strictly_increasing():
+    tr = HandTracker.__new__(HandTracker)
+    tr._last_ms = -1
+    stamps = [tr._next_ms(t) for t in (0.0, 0.0004, 0.0009, 0.001, 0.05)]
+    assert stamps == sorted(set(stamps))
+    assert len(stamps) == len(set(stamps))
+
+
+def test_next_ms_tracks_real_time_when_gaps_are_large():
+    tr = HandTracker.__new__(HandTracker)
+    tr._last_ms = -1
+    tr._next_ms(0.0)
+    assert tr._next_ms(1.5) == 1500
