@@ -1940,29 +1940,51 @@ def record_to(path: str, seconds: float = 10.0, model_path: str | None = None) -
     print(f"wrote {len(frames)} frames to {path}")
 ```
 
-- [ ] **Step 6: Record the six fixture sessions**
+- [ ] **Step 6: Create the fixture-recording script**
 
-Run each and perform the described action. Ten seconds each.
+The recordings themselves are run by the user, not by an implementer: they need a
+person gesturing at the camera, and on this machine they must run from a process
+started after camera access was granted. Create the script; do not run it.
+
+Create `scripts/record_fixtures.sh`, executable:
 
 ```bash
+#!/usr/bin/env bash
+# Record the six replay fixtures. Run from the repo root in Terminal.app.
+set -euo pipefail
+cd "$(dirname "$0")/.."
 mkdir -p recordings
-for name in five_clicks one_double_click drag_a_to_b reaching_past talking_hands one_sweep; do
-  echo "=== recording: $name — press return when ready ==="; read
-  .venv/bin/python -c "
-import sys; sys.path.insert(0, 'src')
+
+record() {
+  local name="$1" prompt="$2"
+  echo
+  echo "=== $name ==="
+  echo "$prompt"
+  read -r -p "press return to start a 10 second recording..."
+  PYTHONPATH=src .venv/bin/python -c "
 from gesture_control.recorder import record_to
 record_to('recordings/$name.jsonl', seconds=10)
 "
-done
+}
+
+record five_clicks      "Arm with an open palm, then five deliberate, separated pinch taps."
+record one_double_click "Arm, then one quick pair of taps."
+record drag_a_to_b      "Arm, pinch, hold still for a beat, move, then release."
+record reaching_past    "Reach past the camera for a cup. Do NOT address the system."
+record talking_hands    "Talk with your hands in frame. Do NOT address the system."
+record one_sweep        "Arm, then one brisk horizontal sweep."
+
+echo
+echo "done. now run: .venv/bin/pytest tests/test_replay.py -v"
 ```
 
-| Fixture | What to do during the ten seconds |
+| Fixture | What the user does during the ten seconds |
 |---|---|
 | `five_clicks` | Arm, then five deliberate separated pinch taps |
 | `one_double_click` | Arm, then one quick pair of taps |
 | `drag_a_to_b` | Arm, pinch, hold still for a beat, move, release |
 | `reaching_past` | Reach past the camera for a cup. Do not address the system |
-| `talking_hands` | Talk with your hands in frame. Do not address the system |
+| `talking_hands` | Talk with hands in frame. Do not address the system |
 | `one_sweep` | Arm, then one brisk horizontal sweep |
 
 - [ ] **Step 7: Write the replay assertions**
@@ -2021,7 +2043,13 @@ The last three are the false-positive net. `pytest.skip` on a missing fixture ke
 - [ ] **Step 8: Run the full suite**
 
 Run: `.venv/bin/pytest -v`
-Expected: all pass. If a replay test fails, that is real signal — adjust the constant in `config.py` it implicates, rerun, and note the change. Do not edit the assertion to match the behaviour.
+Expected: all pass, with the six replay-fixture tests reported as SKIPPED — the
+fixtures are recorded by the user separately, and `pytest.skip` on a missing
+fixture is deliberate so the suite stays green for a fresh clone.
+
+Once the user has recorded them, a failing replay test is real signal: adjust the
+constant in `config.py` it implicates, rerun, and note the change. Do not edit the
+assertion to match the behaviour.
 
 - [ ] **Step 9: Commit**
 
