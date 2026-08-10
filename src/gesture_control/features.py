@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import math
+
+from . import config
+from .types import Features, HandFrame, Point2, Point3
+
+WRIST = 0
+THUMB_TIP = 4
+INDEX_MCP = 5
+INDEX_TIP = 8
+MIDDLE_MCP = 9
+PINKY_MCP = 17
+
+FINGER_JOINTS = ((6, 8), (10, 12), (14, 16), (18, 20))
+
+_ABSENT = Features(
+    pinch_ratio=1.0,
+    fingers_up=(False, False, False, False),
+    palm_facing=False,
+    hand_scale=0.0,
+    cursor_ref=Point2(0.5, 0.5),
+    t=0.0,
+    present=False,
+)
+
+
+def _mirror(p: Point3) -> Point3:
+    return Point3(1.0 - p.x, p.y, p.z)
+
+
+def _dist(a: Point3, b: Point3) -> float:
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+
+def _palm_facing(pts: tuple[Point3, ...], handedness: str) -> bool:
+    wrist = pts[WRIST]
+    v1x, v1y = pts[INDEX_MCP].x - wrist.x, pts[INDEX_MCP].y - wrist.y
+    v2x, v2y = pts[PINKY_MCP].x - wrist.x, pts[PINKY_MCP].y - wrist.y
+    cross_z = v1x * v2y - v1y * v2x
+    return cross_z > 0.0 if handedness == "Right" else cross_z < 0.0
+
+
+def extract(frame: HandFrame) -> Features:
+    if not frame.present or len(frame.points) < 21:
+        return Features(**{**_ABSENT.__dict__, "t": frame.t})
+
+    pts = tuple(_mirror(p) for p in frame.points)
+    scale = _dist(pts[WRIST], pts[MIDDLE_MCP])
+    if scale <= 0.0:
+        return Features(**{**_ABSENT.__dict__, "t": frame.t})
+
+    pinch = _dist(pts[THUMB_TIP], pts[INDEX_TIP]) / scale
+
+    fingers = tuple(
+        _dist(pts[WRIST], pts[tip]) > config.FINGER_EXT_RATIO * _dist(pts[WRIST], pts[pip])
+        for pip, tip in FINGER_JOINTS
+    )
+
+    return Features(
+        pinch_ratio=pinch,
+        fingers_up=fingers,
+        palm_facing=_palm_facing(pts, frame.handedness),
+        hand_scale=scale,
+        cursor_ref=Point2(pts[INDEX_MCP].x, pts[INDEX_MCP].y),
+        t=frame.t,
+        present=True,
+    )

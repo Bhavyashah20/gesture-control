@@ -323,6 +323,10 @@ def make_hand(scale=1.0, pinch=0.30, fingers=(True, True, True, True),
 
     Coordinates are pre-mirror (raw camera space), so extract() will flip x.
     In raw space a right hand has its index knuckle to the RIGHT of its pinky.
+
+    `pinch` is how far the thumb has closed toward the index tip: 0.0 is wide
+    open and 0.9 is fully closed. It is therefore INVERSELY related to the
+    resulting pinch_ratio.
     """
     ox, oy = offset
     pts = [Point3(0.0, 0.0, 0.0)] * 21
@@ -366,8 +370,9 @@ def test_pinch_ratio_is_invariant_to_hand_scale():
 
 
 def test_pinch_ratio_tracks_thumb_distance():
-    open_hand = extract(make_hand(pinch=0.90))
-    closed = extract(make_hand(pinch=0.10))
+    """Higher `pinch` means more pinched, so it must yield a LOWER ratio."""
+    open_hand = extract(make_hand(pinch=0.10))
+    closed = extract(make_hand(pinch=0.90))
     assert open_hand.pinch_ratio > closed.pinch_ratio
 
 
