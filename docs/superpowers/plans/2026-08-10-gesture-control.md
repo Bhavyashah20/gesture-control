@@ -2040,7 +2040,7 @@ git commit -m "feat: add session recorder and replay regression tests"
 
 **Interfaces:**
 - Consumes: all intent types from `types`
-- Produces: `class DryRunActuator` with `apply(intents: list[Intent]) -> None`, `release_all() -> None`, and attribute `log: list[str]`; `class QuartzActuator` with the same two methods; `accessibility_granted() -> bool`
+- Produces: `class DryRunActuator` with `apply(intents: list[Intent]) -> None`, `release_all() -> None`, and attributes `log: list[str]` and `button_down: bool`; `class QuartzActuator` with the same two methods and `button_down`; `accessibility_granted() -> bool`; `request_accessibility() -> bool`
 
 **This is the only module that can cause harm,** so it gets the strictest structure. `QuartzActuator` holds exactly one piece of mutable state — whether the left button is down — and `release_all()` is idempotent. The unit tests cover `DryRunActuator` and the shared intent dispatch; the Quartz calls are verified in the manual check.
 
@@ -2146,9 +2146,28 @@ class DryRunActuator:
 
 
 def accessibility_granted() -> bool:
-    from ApplicationServices import AXIsProcessTrusted
+    """Whether this process may post synthetic events.
 
-    return bool(AXIsProcessTrusted())
+    Uses `CGPreflightPostEventAccess` rather than `AXIsProcessTrusted`: it asks
+    the precise question this app needs answered, and it lives in Quartz, which
+    is already a dependency. `AXIsProcessTrusted` would require the separate
+    `pyobjc-framework-ApplicationServices` package.
+    """
+    import Quartz
+
+    return bool(Quartz.CGPreflightPostEventAccess())
+
+
+def request_accessibility() -> bool:
+    """Ask macOS for event-posting access, returning whether it is now granted.
+
+    Calling this is what makes the app appear in the Accessibility list at all —
+    the toggle does not exist until a process has asked. Used by the startup
+    preflight so the user has something to switch on.
+    """
+    import Quartz
+
+    return bool(Quartz.CGRequestPostEventAccess())
 
 
 class QuartzActuator:
@@ -2236,19 +2255,33 @@ Expected: 6 passed
 Open TextEdit with a few words of text first, so a stray drag is harmless.
 
 ```bash
-.venv/bin/python -c "
-import sys, time; sys.path.insert(0, 'src')
-from gesture_control.actuator import QuartzActuator, accessibility_granted
+PYTHONPATH=src .venv/bin/python -c "
+import time
+from gesture_control.actuator import (
+    QuartzActuator, accessibility_granted, request_accessibility,
+)
+from gesture_control.types import Move
+
 print('accessibility granted:', accessibility_granted())
+if not accessibility_granted():
+    print('requesting access:', request_accessibility())
+    print('enable the app under privacy and security, accessibility, then re-run')
+    raise SystemExit(1)
+
 a = QuartzActuator()
 time.sleep(2)
-for _ in range(20): a.apply([__import__('gesture_control.types', fromlist=['Move']).Move(5, 0)]); time.sleep(0.02)
+for _ in range(20):
+    a.apply([Move(5, 0)])
+    time.sleep(0.02)
 a.release_all()
 print('cursor should have drifted right by about 100 pixels')
 "
 ```
 
-Expected: `accessibility granted: True` and the cursor drifting right. If it prints `False`, add your terminal under System Settings → Privacy & Security → Accessibility and restart the terminal.
+Expected: `accessibility granted: True` and the cursor drifting right. If it prints
+`False`, the script requests access, which is what makes the app appear in the
+Accessibility list at all — the toggle does not exist until something has asked.
+Enable it there, then re-run.
 
 - [ ] **Step 6: Commit**
 
