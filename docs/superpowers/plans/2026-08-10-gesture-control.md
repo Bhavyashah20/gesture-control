@@ -574,12 +574,14 @@ def test_stays_armed_when_fingers_curl_to_pinch():
 
 
 def test_disarms_after_hand_absent_for_dwell():
+    """Pins both sides of the DISARM_S boundary. Absence starts at t=0.60."""
     g = Gate()
     g.update(feat(0.00))
     assert g.update(feat(0.40)) is True
     assert g.update(feat(0.60, present=False)) is True
     assert g.update(feat(0.80, present=False)) is True
-    assert g.update(feat(1.00, present=False)) is False
+    assert g.update(feat(1.00, present=False)) is True   # 0.40s absent, under 0.5
+    assert g.update(feat(1.20, present=False)) is False  # 0.60s absent, over 0.5
 
 
 def test_brief_dropout_does_not_disarm():
