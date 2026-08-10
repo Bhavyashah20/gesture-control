@@ -256,6 +256,7 @@ ACCEL_VREF = 1.2
 
 SCROLL_GAIN = 900.0
 SCROLL_DWELL_S = 0.200
+SCROLL_MIN_PX = 1.0
 
 SWIPE_VEL = 0.8
 SWIPE_DIST = 0.20
@@ -1515,7 +1516,7 @@ Add `from collections import deque` at the top, and extend the `types` import wi
                 self._state = State.ARMED_IDLE
                 return intents
             px = dyn * config.SCROLL_GAIN
-            if abs(px) >= 1.0:
+            if abs(px) >= config.SCROLL_MIN_PX:
                 intents.append(Scroll(px))
             return intents
 ```
