@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import traceback
 from typing import Callable
 
 from .state_machine import State
@@ -20,6 +21,8 @@ _COLORS = {
     State.DRAG: "#993C1D",
     State.SCROLL: "#534AB7",
 }
+
+_ERROR_COLOR = "#993C1D"
 
 
 def state_label(state: State, present: bool) -> str:
@@ -52,11 +55,30 @@ class Hud:
     def set_state(self, state: State, present: bool) -> None:
         self._label.config(text=state_label(state, present), bg=_COLORS[state])
 
+    def _fail(self, message: str) -> None:
+        """Stop the loop and leave the failure visible on screen.
+
+        Deliberately does NOT destroy the window. A hud that vanishes on error
+        looks the same as one the user closed; one that stays and says what
+        went wrong is the whole reason this module exists.
+        """
+        self._running = False
+        try:
+            self._label.config(text=message, bg=_ERROR_COLOR)
+        except tk.TclError:
+            pass
+
     def _tick(self) -> None:
         if not self._running:
             return
-        self._on_tick()
-        self._root.after(self._tick_ms, self._tick)
+        try:
+            self._on_tick()
+        except Exception:
+            traceback.print_exc()
+            self._fail("pipeline error, see terminal")
+            return
+        if self._running:
+            self._root.after(self._tick_ms, self._tick)
 
     def run(self) -> None:
         self._running = True
