@@ -54,8 +54,9 @@ def test_pinch_ratio_is_invariant_to_hand_scale():
 
 
 def test_pinch_ratio_tracks_thumb_distance():
-    open_hand = extract(make_hand(pinch=0.90))
-    closed = extract(make_hand(pinch=0.10))
+    """Higher `pinch` means more pinched, so it must yield a LOWER ratio."""
+    open_hand = extract(make_hand(pinch=0.10))
+    closed = extract(make_hand(pinch=0.90))
     assert open_hand.pinch_ratio > closed.pinch_ratio
 
 
