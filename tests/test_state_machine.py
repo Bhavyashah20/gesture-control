@@ -1,3 +1,4 @@
+from gesture_control import config
 from gesture_control.state_machine import State, StateMachine
 from gesture_control.types import Features, Move, Point2
 
@@ -111,7 +112,7 @@ def test_slow_release_is_not_a_click():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + 0.30, pinch=0.9))
+    out = sm.update(feat(t + config.TAP_MAX_S + 0.05, pinch=0.9))
     assert out == []
 
 
@@ -155,7 +156,7 @@ def test_holding_pinch_still_starts_a_drag():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + 0.45, pinch=0.2))
+    out = sm.update(feat(t + config.DRAG_DWELL_S + 0.05, pinch=0.2))
     assert DragStart() in out
     assert sm.state is State.DRAG
 
@@ -163,11 +164,12 @@ def test_holding_pinch_still_starts_a_drag():
 def test_drag_emits_moves_then_one_drag_end():
     sm = StateMachine()
     t = arm(sm)
+    d = config.DRAG_DWELL_S
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.45, pinch=0.2))
-    mid = sm.update(feat(t + 0.55, pinch=0.2, ref=(0.6, 0.5)))
+    sm.update(feat(t + d + 0.05, pinch=0.2))
+    mid = sm.update(feat(t + d + 0.15, pinch=0.2, ref=(0.6, 0.5)))
     assert any(isinstance(i, Move) for i in mid)
-    end = sm.update(feat(t + 0.70, pinch=0.9))
+    end = sm.update(feat(t + d + 0.30, pinch=0.9))
     assert end == [DragEnd()]
     assert sm.state is State.ARMED_IDLE
 
@@ -191,12 +193,13 @@ def test_hand_vanishing_mid_drag_releases_the_button():
     """
     sm = StateMachine()
     t = arm(sm)
+    d = config.DRAG_DWELL_S
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.45, pinch=0.2))
+    sm.update(feat(t + d + 0.05, pinch=0.2))
     assert sm.state is State.DRAG
-    sm.update(feat(t + 0.60, pinch=0.2, present=False))
+    sm.update(feat(t + d + 0.20, pinch=0.2, present=False))
     assert sm.state is State.DRAG  # still held, within DISARM_S
-    out = sm.update(feat(t + 1.20, pinch=0.2, present=False))
+    out = sm.update(feat(t + d + 0.20 + config.DISARM_S + 0.10, pinch=0.2, present=False))
     assert DragEnd() in out
     assert sm.state is State.DISARMED
 

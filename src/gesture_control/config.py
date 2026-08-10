@@ -10,11 +10,15 @@ HAND_SCALE_MAX = 0.45
 FINGER_EXT_RATIO = 1.15
 ARM_FINGERS_MIN = 3
 
-TAP_MAX_S = 0.250
-TAP_MAX_PX = 15.0
-DOUBLE_MAX_S = 0.350
-DOUBLE_MAX_PX = 30.0
-DRAG_DWELL_S = 0.400
+# Calibrated against real recordings, not estimated. Observed on a live hand:
+# deliberate taps hold 0.37-0.47 s (the original 0.250 rejected every one of
+# them), tap travel reaches 16.7 px (the original 15.0 sat mid-distribution),
+# and a real double-click gap was 0.399 s (the original 0.350 just missed it).
+TAP_MAX_S = 0.550
+TAP_MAX_PX = 25.0
+DOUBLE_MAX_S = 0.450
+DOUBLE_MAX_PX = 50.0
+DRAG_DWELL_S = 0.700
 
 BASE_GAIN_PX = 1600.0
 ACCEL_MIN = 0.35
