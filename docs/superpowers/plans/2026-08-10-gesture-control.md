@@ -1953,6 +1953,16 @@ Create `scripts/record_fixtures.sh`, executable:
 # Record the six replay fixtures. Run from the repo root in Terminal.app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+if [ ! -x .venv/bin/python ]; then
+  echo "error: .venv/bin/python not found. Create the venv first." >&2
+  exit 1
+fi
+if [ ! -f models/hand_landmarker.task ]; then
+  echo "error: models/hand_landmarker.task not found. Download it first." >&2
+  exit 1
+fi
+
 mkdir -p recordings
 
 record() {
@@ -1989,12 +1999,10 @@ echo "done. now run: .venv/bin/pytest tests/test_replay.py -v"
 
 - [ ] **Step 7: Write the replay assertions**
 
+Add `import pytest` and `from gesture_control.types import Click, DragEnd, Space`
+to the imports at the TOP of the file rather than mid-file, then append:
+
 ```python
-# append to tests/test_replay.py
-import pytest
-
-from gesture_control.types import Click, DragEnd, DragStart, Space
-
 FIXTURES = "recordings"
 
 
@@ -2024,13 +2032,22 @@ def test_drag_yields_one_start_and_one_end():
 
 
 def test_reaching_past_camera_yields_nothing():
-    out = _replay("reaching_past")
-    assert [i for i in out if isinstance(i, (Click, DragStart, Space))] == []
+    """Reaching past the camera must produce NO intents at all.
+
+    Not merely no clicks. Cursor drift and stray scrolling are false positives
+    too, and for something running all day they are the most irritating kind.
+    Filtering to (Click, DragStart, Space) would let a Move or Scroll stream
+    through unnoticed, which is the exact failure this fixture exists to catch.
+
+    If this fails on a real recording, tune the gate. Do not weaken the
+    assertion — that would discard the only evidence the system stays quiet.
+    """
+    assert _replay("reaching_past") == []
 
 
 def test_talking_with_hands_yields_nothing():
-    out = _replay("talking_hands")
-    assert [i for i in out if isinstance(i, (Click, DragStart, Space))] == []
+    """Same standard: total silence while the system is not being addressed."""
+    assert _replay("talking_hands") == []
 
 
 def test_one_sweep_yields_exactly_one_space():
