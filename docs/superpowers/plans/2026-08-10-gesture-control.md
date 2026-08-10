@@ -2310,7 +2310,7 @@ The HUD is a requirement, not decoration: gesture input gives no physical confir
 
 ```python
 # tests/test_hud.py
-from gesture_control.hud import state_label
+from gesture_control.hud import Hud, state_label
 from gesture_control.state_machine import State
 
 
@@ -2335,6 +2335,69 @@ def test_disarmed_label_ignores_presence():
     assert state_label(State.DISARMED, present=False) == state_label(
         State.DISARMED, present=True
     )
+
+
+class _FakeLabel:
+    def __init__(self):
+        self.cfg = {}
+
+    def config(self, **kw):
+        self.cfg.update(kw)
+
+
+class _FakeRoot:
+    def __init__(self):
+        self.scheduled = []
+
+    def after(self, ms, fn):
+        self.scheduled.append((ms, fn))
+
+
+def _bare_hud(on_tick):
+    """A Hud with its Tk plumbing faked out, so these run without a display."""
+    h = Hud.__new__(Hud)
+    h._on_tick = on_tick
+    h._tick_ms = 10
+    h._running = True
+    h._root = _FakeRoot()
+    h._label = _FakeLabel()
+    return h
+
+
+def test_tick_reschedules_while_running():
+    h = _bare_hud(lambda: None)
+    h._tick()
+    assert len(h._root.scheduled) == 1
+
+
+def test_tick_does_not_reschedule_after_on_tick_stops_it():
+    """A pipeline step that stops the hud must not leave a pending callback.
+
+    Rescheduling after stop() has destroyed the root raises TclError.
+    """
+    holder = {}
+    holder["h"] = None
+
+    def stopper():
+        holder["h"]._running = False
+
+    h = _bare_hud(stopper)
+    holder["h"] = h
+    h._tick()
+    assert h._root.scheduled == []
+
+
+def test_on_tick_exception_stops_the_loop_and_shows_the_error():
+    """A dead pipeline must not leave a healthy-looking hud."""
+
+    def boom():
+        raise RuntimeError("pipeline exploded")
+
+    h = _bare_hud(boom)
+    h._tick()
+    assert h._running is False
+    assert h._root.scheduled == []
+    assert "error" in h._label.cfg["text"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2348,9 +2411,12 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'gesture_control.hud'`
 from __future__ import annotations
 
 import tkinter as tk
+import traceback
 from typing import Callable
 
 from .state_machine import State
+
+_ERROR_COLOR = "#993C1D"
 
 _LABELS = {
     State.DISARMED: "disarmed",
@@ -2399,11 +2465,30 @@ class Hud:
     def set_state(self, state: State, present: bool) -> None:
         self._label.config(text=state_label(state, present), bg=_COLORS[state])
 
+    def _fail(self, message: str) -> None:
+        """Stop the loop and leave the failure visible on screen.
+
+        Deliberately does NOT destroy the window. A hud that vanishes on error
+        looks the same as one the user closed; one that stays and says what
+        went wrong is the whole reason this module exists.
+        """
+        self._running = False
+        try:
+            self._label.config(text=message, bg=_ERROR_COLOR)
+        except tk.TclError:
+            pass
+
     def _tick(self) -> None:
         if not self._running:
             return
-        self._on_tick()
-        self._root.after(self._tick_ms, self._tick)
+        try:
+            self._on_tick()
+        except Exception:
+            traceback.print_exc()
+            self._fail("pipeline error, see terminal")
+            return
+        if self._running:
+            self._root.after(self._tick_ms, self._tick)
 
     def run(self) -> None:
         self._running = True
