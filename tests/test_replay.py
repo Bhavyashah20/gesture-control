@@ -1,7 +1,9 @@
 import json
 
+import pytest
+
 from gesture_control.recorder import read_session, replay, write_session
-from gesture_control.types import HandFrame, Point3
+from gesture_control.types import Click, DragEnd, DragStart, HandFrame, Point3, Space
 
 
 def _frames():
@@ -37,10 +39,6 @@ def test_replay_of_absent_frames_yields_no_intents(tmp_path):
 
 
 # --- Replay fixture assertions ---
-import pytest
-
-from gesture_control.types import Click, DragEnd, DragStart, Space
-
 FIXTURES = "recordings"
 
 
@@ -70,13 +68,22 @@ def test_drag_yields_one_start_and_one_end():
 
 
 def test_reaching_past_camera_yields_nothing():
-    out = _replay("reaching_past")
-    assert [i for i in out if isinstance(i, (Click, DragStart, Space))] == []
+    """Reaching past the camera must produce NO intents at all.
+
+    Not merely no clicks. Cursor drift and stray scrolling are false positives
+    too, and for something running all day they are the most irritating kind.
+    Filtering to (Click, DragStart, Space) would let a Move or Scroll stream
+    through unnoticed, which is the exact failure this fixture exists to catch.
+
+    If this fails on a real recording, tune the gate. Do not weaken the
+    assertion — that would discard the only evidence the system stays quiet.
+    """
+    assert _replay("reaching_past") == []
 
 
 def test_talking_with_hands_yields_nothing():
-    out = _replay("talking_hands")
-    assert [i for i in out if isinstance(i, (Click, DragStart, Space))] == []
+    """Same standard: total silence while the system is not being addressed."""
+    assert _replay("talking_hands") == []
 
 
 def test_one_sweep_yields_exactly_one_space():

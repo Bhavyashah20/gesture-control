@@ -2,6 +2,16 @@
 # Record the six replay fixtures. Run from the repo root in Terminal.app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+if [ ! -x .venv/bin/python ]; then
+  echo "error: .venv/bin/python not found. Create the venv first." >&2
+  exit 1
+fi
+if [ ! -f models/hand_landmarker.task ]; then
+  echo "error: models/hand_landmarker.task not found. Download it first." >&2
+  exit 1
+fi
+
 mkdir -p recordings
 
 record() {
