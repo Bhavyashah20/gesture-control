@@ -23,9 +23,9 @@ from . import config
 from .hud import _COLORS, state_label
 from .state_machine import State
 from .types import (
+    ButtonDown,
+    ButtonUp,
     Click,
-    DragEnd,
-    DragStart,
     Features,
     HandFrame,
     Intent,
@@ -102,10 +102,10 @@ def intent_label(intent: Intent | None) -> str | None:
     match intent:
         case Click(n):
             return f"click x{n}"
-        case DragStart():
-            return "drag start"
-        case DragEnd():
-            return "drag end"
+        case ButtonDown():
+            return "button down"
+        case ButtonUp():
+            return "button up"
         case Scroll(dy):
             return f"scroll {dy:+.0f}"
         case Space(d):

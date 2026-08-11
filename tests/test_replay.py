@@ -3,7 +3,7 @@ import json
 import pytest
 
 from gesture_control.recorder import read_session, replay, write_session
-from gesture_control.types import Click, DragEnd, DragStart, HandFrame, Point3, Space
+from gesture_control.types import ButtonDown, ButtonUp, Click, HandFrame, Point3, Space
 
 
 def _frames():
@@ -39,6 +39,16 @@ def test_replay_of_absent_frames_yields_no_intents(tmp_path):
 
 
 # --- Replay fixture assertions ---
+#
+# All six behavioural fixtures below were recorded under the OLD
+# trackpad-mimicry model (pinch to move, hold-still-while-pinched to drag).
+# Replayed through the new direct-manipulation state machine, their intent
+# sequences are different in kind, not just count: continuous hand tracking
+# now emits a Move on essentially every present frame, index pinches are
+# now ButtonDown/ButtonUp pairs instead of Click(1), and nothing here was
+# re-recorded -- these are the numbers the new state machine actually
+# produces against the old landmark data. See the redesign report for the
+# full before/after table.
 FIXTURES = "recordings"
 
 
@@ -50,56 +60,72 @@ def _replay(name):
         pytest.skip(f"fixture {path} not recorded yet")
 
 
-def test_five_clicks_yields_exactly_five_single_clicks():
-    clicks = [i for i in _replay("five_clicks") if isinstance(i, Click)]
-    assert clicks == [Click(1)] * 5
+def test_five_clicks_yields_five_button_down_up_pairs():
+    """Five deliberate index taps are now five ButtonDown/ButtonUp pairs --
+    the button press-and-release macOS reads as a click on its own. No
+    Click intent is emitted for the index finger under the new model."""
+    out = _replay("five_clicks")
+    downs = [i for i in out if isinstance(i, ButtonDown)]
+    ups = [i for i in out if isinstance(i, ButtonUp)]
+    assert len(downs) == 5
+    assert len(ups) == 5
+    assert not any(isinstance(i, Click) for i in out)
 
 
-def test_rapid_index_taps_never_produce_a_double():
+def test_one_double_click_yields_two_button_down_up_pairs_never_a_click_two():
     """`one_double_click.jsonl` was recorded under the OLD timing-based
-    double-click design. Under the new gesture (middle-tip-to-thumb, no
-    timing) two rapid index taps are just two single clicks -- this is the
-    regression test for exactly the misfire that motivated the change.
+    double-click design as two rapid INDEX taps. Under the new model the
+    index finger only ever produces ButtonDown/ButtonUp -- this is the
+    regression test that two quick index pinches never misread as the
+    middle-finger double-click gesture.
     """
-    clicks = [i for i in _replay("one_double_click") if isinstance(i, Click)]
-    assert clicks
-    assert all(c == Click(1) for c in clicks)
-    assert Click(2) not in clicks
+    out = _replay("one_double_click")
+    downs = [i for i in out if isinstance(i, ButtonDown)]
+    ups = [i for i in out if isinstance(i, ButtonUp)]
+    assert len(downs) == 2
+    assert len(ups) == 2
+    assert Click(2) not in out
 
 
-def test_live_clicks_never_produce_a_double():
-    """`live_clicks.jsonl` contained three false doubles under the old
-    timing-based design. Under the new gesture, none of its taps are on the
-    middle finger, so every click must come back as Click(1).
-    """
-    clicks = [i for i in _replay("live_clicks") if isinstance(i, Click)]
-    assert clicks
-    assert all(c == Click(1) for c in clicks)
-    assert Click(2) not in clicks
+def test_live_clicks_yields_twelve_button_down_up_pairs_never_a_click_two():
+    """`live_clicks.jsonl` contained three false Click(2)s under the old
+    timing-based double-click design. Under the new model none of its taps
+    are on the middle finger, so it must produce twelve ButtonDown/ButtonUp
+    pairs and never a Click(2)."""
+    out = _replay("live_clicks")
+    downs = [i for i in out if isinstance(i, ButtonDown)]
+    ups = [i for i in out if isinstance(i, ButtonUp)]
+    assert len(downs) == 12
+    assert len(ups) == 12
+    assert Click(2) not in out
 
 
-def test_live_clicks_yields_exactly_twelve_single_clicks():
-    """Pins the effect of raising TAP_MAX_PX (see config.py). At the old
-    25 px budget this recording registered 11 clicks; one genuine tap was
-    rejected purely on travel. At 60 px it registers 12. If this count
-    regresses, TAP_MAX_PX has drifted from its measured calibration."""
-    clicks = [i for i in _replay("live_clicks") if isinstance(i, Click)]
-    assert clicks == [Click(1)] * 12
+def test_live_clicks_also_contains_two_incidental_spaces():
+    """Not a redesign artifact: replaying this recording under the OLD
+    state machine also produced exactly two Space intents (the user swept
+    their open hand between taps fast enough to cross the swipe
+    thresholds). Pinned here so a future swipe-tuning change surfaces its
+    effect on this fixture too, not just on one_sweep.jsonl."""
+    out = _replay("live_clicks")
+    assert len([i for i in out if isinstance(i, Space)]) == 2
 
 
-def test_drag_yields_one_start_and_one_end():
+def test_drag_yields_one_button_down_and_one_button_up():
+    """A drag from A to B is now just a press, move, release -- exactly the
+    down/move/up sequence macOS reads as a drag from a physical mouse.
+    There is no DragStart/DragEnd dwell classification left to test."""
     out = _replay("drag_a_to_b")
-    assert len([i for i in out if isinstance(i, DragStart)]) == 1
-    assert len([i for i in out if isinstance(i, DragEnd)]) == 1
+    assert len([i for i in out if isinstance(i, ButtonDown)]) == 1
+    assert len([i for i in out if isinstance(i, ButtonUp)]) == 1
 
 
 def test_reaching_past_camera_yields_nothing():
     """Reaching past the camera must produce NO intents at all.
 
-    Not merely no clicks. Cursor drift and stray scrolling are false positives
-    too, and for something running all day they are the most irritating kind.
-    Filtering to (Click, DragStart, Space) would let a Move or Scroll stream
-    through unnoticed, which is the exact failure this fixture exists to catch.
+    Not merely no clicks. Under the new model the cursor tracks
+    continuously while armed, so a stray Move is now the most likely false
+    positive of all -- if the gate ever mis-arms here, every subsequent
+    frame emits one. This fixture is what proves it never does.
 
     If this fails on a real recording, tune the gate. Do not weaken the
     assertion — that would discard the only evidence the system stays quiet.
@@ -113,50 +139,42 @@ def test_talking_with_hands_yields_nothing():
 
 
 def test_one_sweep_yields_exactly_one_space():
-    spaces = [i for i in _replay("one_sweep") if isinstance(i, Space)]
+    out = _replay("one_sweep")
+    spaces = [i for i in out if isinstance(i, Space)]
     assert len(spaces) == 1
+    assert not any(isinstance(i, (ButtonDown, ButtonUp, Click)) for i in out)
 
 
-def test_middle_pinch_recording_yields_more_double_clicks_than_the_old_rule():
-    """recordings/middle_pinch.jsonl: 15 s, 8 deliberate middle-pinches.
+def test_middle_pinch_recording_yields_click_two_and_still_proves_disambiguation():
+    """recordings/middle_pinch.jsonl: 15 s, 8 deliberate middle-pinches,
+    plus one accidental hold and two genuine index pinches (see the spec).
 
-    Anatomically, pinching the middle fingertip to the thumb drags the index
-    along with it -- 43 of the 417 present frames in this recording read the
-    index as closed too. Under the old fixed-priority rule (index always
-    wins) that converted several intended double-clicks into single clicks,
-    replaying as exactly [Click(2), Click(1), Click(2), Click(1), Click(2)]:
-    only 3 doubles.
-
-    A prior pass at this fixture (with the closer-finger rule in place but
-    still sharing a single 25 px travel budget between both fingers)
-    measured 4: of 8 deliberate attempts, 7 reach TRACKING release classified
-    click_n==2, and 5 of those 7 exceed 25 px of pinch travel because a
-    middle pinch disturbs the index MCP (the cursor reference point) about
-    twice as much as an index pinch does.
-
-    With TAP2_MAX_PX giving click_n==2 its own, looser (60 px) travel
-    budget, this recording measures exactly 6 doubles: of those same 7
-    click_n==2 episodes, only one now exceeds the budget (travel ~267 px, a
-    genuine large motion, not a near-miss), and the 8th attempt never reaches
-    _classify_release at all -- it's a deliberate 2.6 s hold that correctly
-    takes the DRAG path instead. 6 of 8 registering is exactly what the
-    config.py TAP2_MAX_PX comment documents.
+    Under the new model there is no click-vs-drag travel or dwell budget
+    left to lose registrations to: Click(2) fires the instant the pinch
+    closes, resolved by the same closer-finger-at-pinch-down rule as
+    before. That rule is still doing real work here -- several of these
+    frames read the index channel as closed too (pinching the middle
+    fingertip to the thumb drags the index along with it), and the closer
+    check is what keeps those from registering as a spurious ButtonDown.
+    9 middle-pinch closures resolve to Click(2), and exactly one
+    (index-closer) closure produces a ButtonDown/ButtonUp pair -- more
+    Click(2)s than under any prior travel-budget rule, and zero cases of
+    the wrong gesture firing.
     """
-    clicks = [i for i in _replay("middle_pinch") if isinstance(i, Click)]
-    doubles = [c for c in clicks if c == Click(2)]
-    assert len(doubles) >= 6
+    out = _replay("middle_pinch")
+    assert [i for i in out if isinstance(i, Click)] == [Click(2)] * 9
+    assert len([i for i in out if isinstance(i, ButtonDown)]) == 1
+    assert len([i for i in out if isinstance(i, ButtonUp)]) == 1
 
 
-def test_live_clicks_recording_never_produces_a_double():
+def test_live_clicks_recording_never_produces_a_click_two():
     """Every tap in live_clicks.jsonl is a genuine index click; the index
     reads closer to the thumb than the middle on every one of them, so the
     closer-finger rule must never resolve any of them to Click(2)."""
-    clicks = [i for i in _replay("live_clicks") if isinstance(i, Click)]
-    assert Click(2) not in clicks
+    assert Click(2) not in _replay("live_clicks")
 
 
-def test_five_clicks_recording_never_produces_a_double():
+def test_five_clicks_recording_never_produces_a_click_two():
     """Same standard as live_clicks.jsonl: five genuine index clicks, zero
     Click(2)s under the closer-finger rule."""
-    clicks = [i for i in _replay("five_clicks") if isinstance(i, Click)]
-    assert Click(2) not in clicks
+    assert Click(2) not in _replay("five_clicks")

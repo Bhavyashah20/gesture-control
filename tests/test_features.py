@@ -5,7 +5,8 @@ from gesture_control.features import extract
 from gesture_control.types import HandFrame, Point3
 
 
-def make_hand(scale=1.0, pinch=0.30, pinch2=None, fingers=(True, True, True, True),
+def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None,
+              fingers=(True, True, True, True),
               left=False, offset=(0.0, 0.0), t=0.0):
     """Build a synthetic right hand, palm to camera, fingers up.
 
@@ -37,6 +38,13 @@ def make_hand(scale=1.0, pinch=0.30, pinch2=None, fingers=(True, True, True, Tru
         # (hand_scale in raw units is 0.20) -- independent of `pinch`, which
         # only ever moves landmark 4 relative to landmark 8.
         put(12, 0.56, thumb_y - pinch2 * 0.20)
+
+    if curl is not None:
+        # Placed directly above the wrist, at the requested distance ratio,
+        # overriding whatever the `fingers` loop above set for landmark 8 --
+        # so dist(wrist, index_tip) / hand_scale == curl exactly, independent
+        # of `fingers`, `pinch`, and `pinch2`.
+        put(8, 0.50, 0.60 - curl * 0.20)
 
     if left:
         pts = [Point3(1.0 - p.x, p.y, p.z) for p in pts]
@@ -119,3 +127,30 @@ def test_cursor_ref_translates_with_the_hand():
     a = extract(make_hand())
     b = extract(make_hand(offset=(0.10, 0.0)))
     assert b.cursor_ref.x < a.cursor_ref.x  # mirrored: raw +x is user -x
+
+
+def test_index_curl_ratio_matches_wrist_to_index_tip_distance():
+    f = extract(make_hand(curl=1.71))
+    assert math.isclose(f.index_curl_ratio, 1.71, abs_tol=1e-6)
+
+
+def test_index_curl_ratio_is_invariant_to_hand_scale():
+    near = extract(make_hand(scale=1.0, curl=1.71))
+    far = extract(make_hand(scale=0.5, curl=1.71))
+    assert math.isclose(near.index_curl_ratio, far.index_curl_ratio, abs_tol=1e-6)
+
+
+def test_index_curl_ratio_is_lower_when_curled_than_open():
+    """dist(landmark[8], landmark[0]) / hand_scale must shrink as the index
+    fingertip moves toward the wrist -- the signal the clutch depends on."""
+    open_hand = extract(make_hand(curl=1.71))
+    curled = extract(make_hand(curl=1.15))
+    assert curled.index_curl_ratio < open_hand.index_curl_ratio
+
+
+def test_index_curl_ratio_is_independent_of_pinch():
+    """Closing the index-thumb pinch (moving landmark 4) must not move
+    landmark 8, so index_curl_ratio must not change with it."""
+    a = extract(make_hand(pinch=0.10, curl=1.71))
+    b = extract(make_hand(pinch=0.90, curl=1.71))
+    assert math.isclose(a.index_curl_ratio, b.index_curl_ratio, abs_tol=1e-6)

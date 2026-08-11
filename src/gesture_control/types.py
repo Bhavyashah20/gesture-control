@@ -27,6 +27,7 @@ class HandFrame:
 class Features:
     pinch_ratio: float
     pinch2_ratio: float
+    index_curl_ratio: float
     fingers_up: tuple[bool, bool, bool, bool]
     palm_facing: bool
     hand_scale: float
@@ -47,12 +48,12 @@ class Click:
 
 
 @dataclass(frozen=True)
-class DragStart:
+class ButtonDown:
     pass
 
 
 @dataclass(frozen=True)
-class DragEnd:
+class ButtonUp:
     pass
 
 
@@ -66,4 +67,4 @@ class Space:
     direction: str
 
 
-Intent = Move | Click | DragStart | DragEnd | Scroll | Space
+Intent = Move | Click | ButtonDown | ButtonUp | Scroll | Space

@@ -14,8 +14,8 @@ def test_labels_are_lowercase_sentence_case():
 
 
 def test_absent_hand_is_flagged_while_armed():
-    assert state_label(State.ARMED_IDLE, present=False) != state_label(
-        State.ARMED_IDLE, present=True
+    assert state_label(State.TRACKING, present=False) != state_label(
+        State.TRACKING, present=True
     )
 
 

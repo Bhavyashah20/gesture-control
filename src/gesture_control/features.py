@@ -18,6 +18,10 @@ FINGER_JOINTS = ((6, 8), (10, 12), (14, 16), (18, 20))
 _ABSENT = Features(
     pinch_ratio=1.0,
     pinch2_ratio=1.0,
+    # Matches the measured open-hand median (see config.py's INDEX_CURL_*
+    # comment) so an absent frame reads as "uncurled", not "curled" -- an
+    # absent hand must never freeze the cursor via the curl path.
+    index_curl_ratio=1.71,
     fingers_up=(False, False, False, False),
     palm_facing=False,
     hand_scale=0.0,
@@ -65,6 +69,10 @@ def extract(frame: HandFrame) -> Features:
 
     pinch = _dist(pts[THUMB_TIP], pts[INDEX_TIP]) / scale
     pinch2 = _dist(pts[THUMB_TIP], pts[MIDDLE_TIP]) / scale
+    # Index fingertip to wrist, scale-normalized. Drives the clutch (see
+    # config.py's INDEX_CURL_CLOSE / INDEX_CURL_OPEN, PROVISIONAL): curling
+    # the index toward the palm shrinks this ratio, freezing the cursor.
+    index_curl = _dist(pts[WRIST], pts[INDEX_TIP]) / scale
 
     fingers = tuple(
         _dist(pts[WRIST], pts[tip]) > config.FINGER_EXT_RATIO * _dist(pts[WRIST], pts[pip])
@@ -74,6 +82,7 @@ def extract(frame: HandFrame) -> Features:
     return Features(
         pinch_ratio=pinch,
         pinch2_ratio=pinch2,
+        index_curl_ratio=index_curl,
         fingers_up=fingers,
         palm_facing=_palm_facing(pts, frame.handedness),
         hand_scale=scale,

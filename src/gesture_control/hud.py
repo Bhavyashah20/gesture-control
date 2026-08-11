@@ -8,17 +8,17 @@ from .state_machine import State
 
 _LABELS = {
     State.DISARMED: "disarmed",
-    State.ARMED_IDLE: "armed",
+    State.FROZEN: "frozen",
     State.TRACKING: "tracking",
-    State.DRAG: "drag",
+    State.PRESSED: "pressed",
     State.SCROLL: "scroll",
 }
 
 _COLORS = {
     State.DISARMED: "#5F5E5A",
-    State.ARMED_IDLE: "#185FA5",
+    State.FROZEN: "#185FA5",
     State.TRACKING: "#0F6E56",
-    State.DRAG: "#993C1D",
+    State.PRESSED: "#993C1D",
     State.SCROLL: "#534AB7",
 }
 

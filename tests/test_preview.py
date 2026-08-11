@@ -1,6 +1,6 @@
 from gesture_control import preview
 from gesture_control.state_machine import State
-from gesture_control.types import Click, DragEnd, DragStart, Move, Point3, Scroll, Space
+from gesture_control.types import ButtonDown, ButtonUp, Click, Move, Point3, Scroll, Space
 
 
 def test_landmark_to_pixel_mirrors_x():
@@ -47,8 +47,8 @@ def test_recent_intent_distinguishes_click_counts():
 
 
 def test_recent_intent_shows_other_notable_intents():
-    assert preview.recent_intent_text(DragStart(), elapsed_s=0.1) == "drag start"
-    assert preview.recent_intent_text(DragEnd(), elapsed_s=0.1) == "drag end"
+    assert preview.recent_intent_text(ButtonDown(), elapsed_s=0.1) == "button down"
+    assert preview.recent_intent_text(ButtonUp(), elapsed_s=0.1) == "button up"
     assert preview.recent_intent_text(Space("right"), elapsed_s=0.1) == "space right"
 
 

@@ -6,30 +6,46 @@ touching the trackpad.
 
 ## Gestures
 
-The vocabulary mirrors the macOS trackpad, so there is no new mental model.
+Direct manipulation, not trackpad mimicry: point to move, pinch to grab, exactly
+like picking up a file and moving your hand.
 
 | Gesture | Action |
 |---|---|
 | Open palm to camera, hold briefly | Arm the system |
-| Pinch (index finger) and move | Move the cursor |
-| Pinch (index finger) and release quickly | Click |
-| Pinch (middle finger) and release quickly | Double-click |
-| Pinch, hold still, then move | Drag |
+| Point your index finger and move your hand | Move the cursor |
+| Curl your index finger toward your palm | Freeze the cursor (clutch), so you can reposition your hand |
+| Uncurl your index finger | Resume tracking, from wherever your hand now is |
+| Pinch (index finger) | Press the mouse button down |
+| Move while pinched | Drag |
+| Release the pinch | Release the mouse button |
+| Pinch (middle finger) | Double-click |
 | Index and middle finger up, move vertically | Scroll |
 | Open palm, sweep sideways | Previous or next fullscreen Space |
 | `Esc` | Stop immediately |
 
-Think of the pinch as your fingertip on the trackpad glass. Releasing it lifts
-off, which is how you reposition your hand without moving the cursor.
+The cursor follows your hand continuously while armed — no pinch required to
+move it. Pinching index-to-thumb is a plain mouse button: it goes down when
+you pinch and up when you release, nothing else. macOS decides click versus
+drag from that down/move/up sequence on its own, exactly as it would for a
+physical mouse, so there is no separate "hold still to drag" gesture to learn
+or mistune.
+
+This replaces an earlier design where a pinch meant both "move the cursor"
+and, if held still, "start a drag" — which meant any pause while aiming a
+pinch could be misread as the start of a drag. No dwell threshold separated
+the two: raising it enough to stop the false drags also stopped genuine
+drags from firing at all. The clutch (curl to freeze) is what pinch-to-move
+used to provide implicitly, now split out as its own gesture, structurally
+unable to be confused with a drag.
 
 Double-click is a distinct gesture, not two fast clicks: pinch your middle
 finger to your thumb instead of your index finger. Whichever fingertip is
 actually closer to your thumb when the pinch closes decides which one it is
 — not which finger you technically moved first. This matters because
 pinching your middle finger to your thumb naturally drags your index
-fingertip part of the way in too, so both can read as "closed" at once; an
-earlier version of this rule let the index finger win by default whenever
-that happened, which silently turned real double-clicks into single clicks.
+fingertip part of the way in too, so both can read as "closed" at once; a
+fixed-priority rule that let the index finger win by default whenever that
+happened would silently turn real double-clicks into spurious button-downs.
 
 ## Setup
 
@@ -66,8 +82,8 @@ Always start with `--dry-run` after changing anything in `config.py`.
 
 `--dry-run` prints one line per action. `move` fires roughly 30 times a
 second, so consecutive moves are folded into a single `move x34`-style
-summary instead of scrolling every click off screen; every click, drag, scroll,
-or space event still prints immediately, on its own line.
+summary instead of scrolling every click off screen; every click, button
+down/up, scroll, or space event still prints immediately, on its own line.
 
 If the project is not installed (`pip install -e ".[dev]"` was skipped), run
 with `PYTHONPATH=src` instead:
@@ -87,11 +103,11 @@ much better starting point than the HUD pill. It opens an OpenCV window,
 mirrored like a selfie camera, showing the live feed with:
 
 - the 21 hand landmarks and finger skeleton drawn on your hand
-- the current state (`disarmed` / `armed` / `tracking` / `drag` / `scroll`)
+- the current state (`disarmed` / `frozen` / `tracking` / `pressed` / `scroll`)
   as a large, colour-coded banner
 - the live `pinch_ratio` and whether the pinch currently reads as closed
-- the last click, drag, or space-switch, held on screen for about a second
-  so it doesn't scroll past unnoticed
+- the last click, button-down/up, or space-switch, held on screen for about a
+  second so it doesn't scroll past unnoticed
 
 Press `Esc` or `q` to quit; this releases any held button the same way the
 HUD path does. `--preview` replaces the Tk HUD for that run — the two never
@@ -108,39 +124,29 @@ gesture, with the same hysteresis pattern as `PINCH_CLOSE` / `PINCH_OPEN`.
 They are set well below the middle-to-thumb ratio observed while genuinely
 index-pinching, so an ordinary click does not misread as a double.
 
-`TAP2_MAX_PX` is the middle-pinch double-click's own travel budget, separate
-from `TAP_MAX_PX` (which governs the index tap; the drag rule has its own
-budget too — see `DRAG_MAX_PX` below). Closing the middle finger to the
-thumb disturbs the whole hand about twice as much as an index pinch —
-median frame-to-frame reference motion of 5.31 vs. 2.66 (normalized units
-x1000), measured across real recordings — so the *original* `TAP_MAX_PX`
-(25 px), calibrated against index pinches, rejected most genuine
-double-clicks on TRAVEL. At 60 px, 6 of 8 real middle-pinch attempts
-register, against 3 of 8 at 25 px; the two that still don't are a deliberate
-2.6 s hold (correctly a drag) and one that genuinely moved 283 px, so
-raising the budget further would not help.
+The index pinch (`PINCH_CLOSE` / `PINCH_OPEN`) no longer classifies click
+versus drag — it is a plain button down/up pair, and macOS reads a
+down/move/up sequence as a click or a drag on its own, the same way it would
+for a physical mouse. That removed five constants that used to exist purely
+to make that classification (`TAP_MAX_S`, `TAP_MAX_PX`, `TAP2_MAX_PX`,
+`DRAG_DWELL_S`, `DRAG_MAX_PX`) and the code that tuned them; they are gone,
+not just unused.
 
-`TAP_MAX_PX` was itself raised from 25 px to 60 px after a wider pass across
-the user's real taps (`live_clicks.jsonl` and `five_clicks.jsonl`, 17 taps
-total): at 25 px one genuine tap was rejected on travel alone (16/17
-registered); at 60 px all 17 register. `TAP2_MAX_PX` happens to land on the
-same 60 px value as a result, but the two remain independent constants,
-tuned for different gestures.
+Which finger's pinch a closing gesture belongs to is still decided by
+comparing `pinch_ratio` to `pinch2_ratio` at the moment either crosses its
+own CLOSE threshold — whichever is numerically smaller (physically closer to
+the thumb) wins. This is the one piece of the old click/drag-disambiguation
+machinery that survives, because it is what keeps a deliberate middle-pinch
+double-click from also registering as a spurious index button-down (see
+`config.py`'s `PINCH_CLOSE` comment for the measured margins).
 
-That change is only safe because of `DRAG_MAX_PX`: the drag trigger's own
-stillness budget, deliberately decoupled from `TAP_MAX_PX`. Before the
-split, the drag trigger reused `TAP_MAX_PX` directly, so loosening the click
-budget would have silently made drags easier to start too — two unrelated
-tuning decisions sharing one knob. Measured against the user's real drag
-(15-25 px of travel by the time the dwell elapses), `DRAG_MAX_PX` stays at
-25 px; budgets below 20 px would stop genuine drags from starting.
-
-`DRAG_DWELL_S` was raised from 700 ms to 1000 ms in the same pass: the
-user's genuine drag still fires at 1.0 s but stops firing entirely at 1.5 s,
-so 1.0 s is a measured ceiling — don't raise it further without
-re-measuring. It must also stay strictly greater than `TAP_MAX_S` (550 ms),
-or a quick tap could be reclassified as a drag before it ever gets the
-chance to release as a click.
+`INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` govern the clutch: curling the index
+finger toward the palm freezes the cursor so you can reposition your hand
+without moving it. **These are PROVISIONAL** — measured only against the
+existing recordings (index-tip-to-wrist ratio ~1.71 open, ~1.39 while
+pinching), not against a dedicated curl recording. They are calibrated only
+tightly enough to guarantee a pinch is never misread as a curl; do not treat
+them as tuned for real clutch behaviour yet.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v

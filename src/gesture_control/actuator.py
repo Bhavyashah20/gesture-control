@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .types import Click, DragEnd, DragStart, Intent, Move, Scroll, Space
+from .types import ButtonDown, ButtonUp, Click, Intent, Move, Scroll, Space
 
 KEY_LEFT_ARROW = 123
 KEY_RIGHT_ARROW = 124
@@ -38,12 +38,12 @@ class DryRunActuator:
                     self._emit(f"move {dx:.1f} {dy:.1f}")
                 case Click(n):
                     self._emit(f"click x{n}")
-                case DragStart():
+                case ButtonDown():
                     self.button_down = True
-                    self._emit("drag-start")
-                case DragEnd():
+                    self._emit("button-down")
+                case ButtonUp():
                     self.button_down = False
-                    self._emit("drag-end")
+                    self._emit("button-up")
                 case Scroll(dy):
                     self._emit(f"scroll {dy:.1f}")
                 case Space(d):
@@ -132,7 +132,7 @@ class QuartzActuator:
                     x, y = self._cursor()
                     self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=n)
                     self._post_mouse(self._q.kCGEventLeftMouseUp, x, y, clicks=n)
-                case DragStart():
+                case ButtonDown():
                     # Set the flag before posting, not after: a signal landing
                     # mid-sequence then leaves release_all() believing the
                     # button IS held (a spurious LeftMouseUp is a harmless
@@ -141,7 +141,7 @@ class QuartzActuator:
                     x, y = self._cursor()
                     self.button_down = True
                     self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=1)
-                case DragEnd():
+                case ButtonUp():
                     x, y = self._cursor()
                     self._post_mouse(self._q.kCGEventLeftMouseUp, x, y, clicks=1)
                     self.button_down = False

@@ -1,12 +1,16 @@
 from gesture_control import config
 from gesture_control.state_machine import State, StateMachine
-from gesture_control.types import Features, Move, Point2
+from gesture_control.types import ButtonDown, ButtonUp, Click, Features, Move, Point2, Scroll, Space
 
 
-def feat(t, pinch=0.9, pinch2=0.9, fingers=(True, True, True, True), palm=True,
+def feat(t, pinch=0.9, pinch2=0.9, curl=1.71, fingers=(True, True, True, True), palm=True,
          ref=(0.5, 0.5), scale=0.20, present=True):
+    """`curl` defaults to 1.71, the measured open-hand median (config.py) --
+    well above INDEX_CURL_OPEN, so tests that don't care about the clutch
+    never accidentally freeze."""
     return Features(
-        pinch_ratio=pinch, pinch2_ratio=pinch2, fingers_up=fingers, palm_facing=palm,
+        pinch_ratio=pinch, pinch2_ratio=pinch2, index_curl_ratio=curl,
+        fingers_up=fingers, palm_facing=palm,
         hand_scale=scale, cursor_ref=Point2(*ref), t=t, present=present,
     )
 
@@ -15,7 +19,7 @@ def arm(sm, t0=0.0):
     """Drive the machine through the arming dwell. Returns the next timestamp."""
     sm.update(feat(t0))
     sm.update(feat(t0 + 0.4))
-    assert sm.state is State.ARMED_IDLE
+    assert sm.state is State.TRACKING
     return t0 + 0.5
 
 
@@ -33,26 +37,31 @@ def test_arms_after_dwell():
     sm.update(feat(0.0))
     assert sm.state is State.DISARMED
     sm.update(feat(0.4))
-    assert sm.state is State.ARMED_IDLE
-
-
-def test_armed_idle_does_not_move_the_cursor():
-    """This is what makes the clutch a clutch."""
-    sm = StateMachine()
-    t = arm(sm)
-    out = sm.update(feat(t, ref=(0.9, 0.9)))
-    assert out == []
-    assert sm.state is State.ARMED_IDLE
-
-
-def test_pinch_enters_tracking():
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
     assert sm.state is State.TRACKING
 
 
-def test_tracking_emits_move_on_hand_motion():
+def test_tracking_moves_the_cursor_without_a_pinch():
+    """The core of the redesign: the cursor follows the hand continuously
+    while armed. No pinch is required, unlike the old trackpad-mimicry
+    model."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, ref=(0.9, 0.9)))
+    moves = [i for i in out if isinstance(i, Move)]
+    assert len(moves) == 1
+    assert moves[0].dx > 0.0
+    assert sm.state is State.TRACKING
+
+
+def test_index_pinch_enters_pressed():
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, pinch=0.2))
+    assert out == [ButtonDown()]
+    assert sm.state is State.PRESSED
+
+
+def test_pressed_emits_move_on_hand_motion():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
@@ -62,23 +71,24 @@ def test_tracking_emits_move_on_hand_motion():
     assert moves[0].dx > 0.0
 
 
-def test_pinch_uses_hysteresis():
+def test_pinch_hysteresis_keeps_pressed_between_thresholds():
     """Between the two thresholds the pinch state must not change."""
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
     sm.update(feat(t + 0.1, pinch=0.40))
-    assert sm.state is State.TRACKING
+    assert sm.state is State.PRESSED
     sm.update(feat(t + 0.2, pinch=0.50))
-    assert sm.state is State.ARMED_IDLE
+    assert sm.state is State.TRACKING
 
 
-def test_release_returns_to_armed_idle():
+def test_release_returns_to_tracking_and_emits_button_up():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.5, pinch=0.9))
-    assert sm.state is State.ARMED_IDLE
+    out = sm.update(feat(t + 0.5, pinch=0.9))
+    assert out == [ButtonUp()]
+    assert sm.state is State.TRACKING
 
 
 def test_losing_posture_disarms():
@@ -92,249 +102,213 @@ def test_losing_posture_disarms():
 def test_virtual_position_accumulates_moves():
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.1, pinch=0.2, ref=(0.6, 0.5)))
+    sm.update(feat(t, ref=(0.6, 0.5)))
     assert sm.virtual_pos.x > 0.0
 
 
-from gesture_control.types import Click, DragEnd, DragStart
-
-
-def test_quick_pinch_release_emits_single_click():
+def test_index_pinch_close_then_release_emits_button_down_then_up():
+    """Click(1) no longer exists. A plain index pinch is a mouse button:
+    down on close, up on release -- nothing else. macOS decides click vs.
+    drag from the down/move/up sequence, exactly as it would for a physical
+    mouse."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + 0.10, pinch=0.9))
-    assert out == [Click(1)]
+    down = sm.update(feat(t, pinch=0.2))
+    assert down == [ButtonDown()]
+    up = sm.update(feat(t + 0.10, pinch=0.9))
+    assert up == [ButtonUp()]
+    assert sm.state is State.TRACKING
 
 
-def test_slow_release_is_not_a_click():
+def test_middle_pinch_close_emits_click_two():
+    """Double-click remains its own gesture: middle-tip-to-thumb, no timing
+    and no travel budget -- it fires the instant the pinch closes."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + config.TAP_MAX_S + 0.05, pinch=0.9))
-    assert out == []
-
-
-def test_release_after_moving_far_is_not_a_click():
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.05, pinch=0.2, ref=(0.75, 0.5)))
-    out = sm.update(feat(t + 0.10, pinch=0.9))
-    assert not any(isinstance(i, Click) for i in out)
-
-
-def test_middle_pinch_tap_emits_click_two():
-    """Double-click is its own gesture now: middle-tip-to-thumb, no timing."""
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch2=0.2))
-    out = sm.update(feat(t + 0.10, pinch2=0.9))
+    out = sm.update(feat(t, pinch2=0.2))
     assert out == [Click(2)]
+    assert sm.state is State.TRACKING
 
 
-def test_index_pinch_tap_still_emits_click_one():
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + 0.10, pinch=0.9))
-    assert out == [Click(1)]
-
-
-def _dx_for_travel(target_px, dt=0.05, iters=60):
-    """Binary-search the horizontal ref delta that produces `target_px` of
-    pinch travel, so tests can target travel amounts defined purely in terms
-    of the config thresholds instead of hardcoded pixel numbers. Travel is
-    read off virtual_pos.x, which accumulates the exact same accelerated
-    deltas _classify_release compares against TAP_MAX_PX / TAP2_MAX_PX.
-    Travel from a given dx does not depend on which finger initiated the
-    pinch, only on the motion, so a single search (against an index tap)
-    serves both click kinds."""
-    def travel(dx):
-        sm = StateMachine()
-        t = arm(sm)
-        sm.update(feat(t, pinch=0.2))
-        sm.update(feat(t + dt, pinch=0.2, ref=(0.5 + dx, 0.5)))
-        return sm.virtual_pos.x
-
-    lo, hi = 0.0, 1.0
-    for _ in range(iters):
-        mid = (lo + hi) / 2.0
-        if travel(mid) < target_px:
-            lo = mid
-        else:
-            hi = mid
-    return hi
-
-
-def test_tap2_budget_is_never_tighter_than_tap_budget():
-    """TAP2_MAX_PX must never be more restrictive than TAP_MAX_PX -- a
-    middle-pinch double-click disturbs the hand at least as much as an index
-    tap, so its travel budget should never be the smaller of the two.
-
-    This replaces a test that pinned a strict inequality (TAP2_MAX_PX
-    strictly looser than TAP_MAX_PX, with a real window of travel values
-    that would reject an index tap but accept a middle-pinch one). That
-    window relied on TAP_MAX_PX being 25 px against TAP2_MAX_PX's 60 px; once
-    TAP_MAX_PX was recalibrated to 60 px (see config.py) the two coincide and
-    the window collapsed to nothing. Middle-pinch classification itself is
-    unaffected -- it always used TAP2_MAX_PX, unchanged -- so this only
-    weakens the *assertable* invariant, not the runtime behaviour.
-    """
-    assert config.TAP2_MAX_PX >= config.TAP_MAX_PX
-
-
-def test_index_pinch_same_travel_emits_nothing():
-    """Travel at the boundary between TAP_MAX_PX and TAP2_MAX_PX must still
-    reject an index tap. Since TAP_MAX_PX was recalibrated to equal
-    TAP2_MAX_PX (both 60 px, see config.py), this boundary now sits exactly
-    at TAP_MAX_PX itself rather than strictly inside a looser middle-pinch
-    window -- see test_tap2_budget_is_never_tighter_than_tap_budget for that
-    relationship."""
-    dx = _dx_for_travel((config.TAP_MAX_PX + config.TAP2_MAX_PX) / 2.0)
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.05, pinch=0.2, ref=(0.5 + dx, 0.5)))
-    out = sm.update(feat(t + 0.10, pinch=0.9))
-    assert out == []
-
-
-def test_middle_pinch_tap_beyond_tap2_max_px_emits_nothing():
-    dx = _dx_for_travel(config.TAP2_MAX_PX * 2.0)
+def test_middle_pinch_never_enters_pressed():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch2=0.2))
-    sm.update(feat(t + 0.05, pinch2=0.2, ref=(0.5 + dx, 0.5)))
-    out = sm.update(feat(t + 0.10, pinch2=0.9))
-    assert out == []
+    assert sm.state is State.TRACKING
 
 
-def test_both_pinches_closed_index_closer_gives_click_one():
+def test_both_pinches_closed_index_closer_enters_pressed():
     """Whichever finger is actually closer to the thumb at pinch-down decides."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.10, pinch2=0.32))
-    out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
-    assert out == [Click(1)]
+    out = sm.update(feat(t, pinch=0.10, pinch2=0.32))
+    assert out == [ButtonDown()]
+    assert sm.state is State.PRESSED
 
 
 def test_both_pinches_closed_middle_closer_gives_click_two():
     """Whichever finger is actually closer to the thumb at pinch-down decides."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.32, pinch2=0.10))
-    out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
+    out = sm.update(feat(t, pinch=0.32, pinch2=0.10))
     assert out == [Click(2)]
+    assert sm.state is State.TRACKING
 
 
 def test_middle_pinch_wins_even_when_index_also_reads_closed():
     """Anatomically, pinching the middle fingertip to the thumb drags the index
     along with it, so the index often reads below PINCH_CLOSE too. Values
     below are drawn from a real frame in recordings/middle_pinch.jsonl
-    (t=3.776s: pinch=0.32, pinch2=0.1686) -- exactly the case that converted
-    intended double-clicks into single clicks under the old fixed-priority
-    rule, which always read a closed index as Click(1) regardless of the
-    middle finger. This must fail against that old rule.
+    (t=3.776s: pinch=0.32, pinch2=0.1686) -- exactly the case that would
+    turn an intended double-click into a spurious ButtonDown under fixed
+    priority (index always wins whenever closed).
     """
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.32, pinch2=0.1686))
-    out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
+    out = sm.update(feat(t, pinch=0.32, pinch2=0.1686))
     assert out == [Click(2)]
+    assert sm.state is State.TRACKING
 
 
-def test_rapid_index_taps_never_emit_click_two():
+def test_rapid_index_pinches_never_emit_click_two():
     sm = StateMachine()
     t = arm(sm)
-    clicks: list[Click] = []
+    outs = []
     for i in range(3):
-        sm.update(feat(t + i * 0.20, pinch=0.2))
-        out = sm.update(feat(t + i * 0.20 + 0.08, pinch=0.9))
-        clicks += [c for c in out if isinstance(c, Click)]
-    assert clicks == [Click(1)] * 3
+        outs += sm.update(feat(t + i * 0.20, pinch=0.2))
+        outs += sm.update(feat(t + i * 0.20 + 0.08, pinch=0.9))
+    assert outs == [ButtonDown(), ButtonUp()] * 3
 
 
-def test_holding_pinch_still_starts_a_drag():
+def test_pressed_emits_moves_then_one_button_up():
+    """Pinch, move, release: exactly the drag sequence macOS reads from a
+    down/move/up mouse sequence. No dwell, no travel budget -- movement
+    while pressed is unconditionally a drag."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    out = sm.update(feat(t + config.DRAG_DWELL_S + 0.05, pinch=0.2))
-    assert DragStart() in out
-    assert sm.state is State.DRAG
-
-
-def test_drag_emits_moves_then_one_drag_end():
-    sm = StateMachine()
-    t = arm(sm)
-    d = config.DRAG_DWELL_S
-    sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + d + 0.05, pinch=0.2))
-    mid = sm.update(feat(t + d + 0.15, pinch=0.2, ref=(0.6, 0.5)))
+    down = sm.update(feat(t, pinch=0.2))
+    assert down == [ButtonDown()]
+    mid = sm.update(feat(t + 0.05, pinch=0.2, ref=(0.6, 0.5)))
     assert any(isinstance(i, Move) for i in mid)
-    end = sm.update(feat(t + d + 0.30, pinch=0.9))
-    assert end == [DragEnd()]
-    assert sm.state is State.ARMED_IDLE
-
-
-def test_drag_uses_its_own_travel_budget_not_the_tap_one():
-    """DRAG_MAX_PX must govern the drag trigger, not TAP_MAX_PX. Travel that
-    sits strictly between the two -- past DRAG_MAX_PX but still under
-    TAP_MAX_PX -- must not be still enough to start a drag. This fails if the
-    drag trigger is ever reunified with TAP_MAX_PX: under the old, coupled
-    code this same travel (which is < TAP_MAX_PX) would have incorrectly let
-    the drag start.
-    """
-    assert config.DRAG_MAX_PX < config.TAP_MAX_PX
-    dx = _dx_for_travel((config.DRAG_MAX_PX + config.TAP_MAX_PX) / 2.0)
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.05, pinch=0.2, ref=(0.5 + dx, 0.5)))
-    out = sm.update(feat(t + config.DRAG_DWELL_S + 0.10, pinch=0.2))
-    assert not any(isinstance(i, DragStart) for i in out)
+    end = sm.update(feat(t + 0.10, pinch=0.9))
+    assert end == [ButtonUp()]
     assert sm.state is State.TRACKING
 
 
-def test_drag_dwell_exceeds_tap_max_duration():
-    """DRAG_DWELL_S must stay strictly greater than TAP_MAX_S, or a quick tap
-    could be reclassified as a drag before it ever gets the chance to release
-    as a click."""
-    assert config.DRAG_DWELL_S > config.TAP_MAX_S
-
-
-def test_moving_before_the_dwell_prevents_a_drag():
+def test_pinching_does_not_read_as_curl_at_calibrated_values():
+    """PROVISIONAL calibration data point (see config.py): index_curl_ratio
+    measures ~1.39 while genuinely pinching, well above INDEX_CURL_CLOSE
+    (1.15), so a pinch must never be misread as a curl -- that would freeze
+    the cursor mid-drag instead of pressing the button."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.10, pinch=0.2, ref=(0.80, 0.5)))
-    out = sm.update(feat(t + 0.50, pinch=0.2))
-    assert not any(isinstance(i, DragStart) for i in out)
-    assert sm.state is State.TRACKING
+    out = sm.update(feat(t, pinch=0.2, curl=1.39))
+    assert out == [ButtonDown()]
+    assert sm.state is State.PRESSED
 
 
-def test_hand_vanishing_mid_drag_releases_the_button():
+def test_hand_vanishing_while_pressed_releases_the_button():
     """The stuck-button guard. Without this macOS keeps the button held.
 
     The absent frames must keep the pinch CLOSED. If they carried an open
-    pinch, the ordinary release path would end the drag and the watchdog
+    pinch, the ordinary release path would end the press and the watchdog
     would never be exercised.
     """
     sm = StateMachine()
     t = arm(sm)
-    d = config.DRAG_DWELL_S
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + d + 0.05, pinch=0.2))
-    assert sm.state is State.DRAG
-    sm.update(feat(t + d + 0.20, pinch=0.2, present=False))
-    assert sm.state is State.DRAG  # still held, within DISARM_S
-    out = sm.update(feat(t + d + 0.20 + config.DISARM_S + 0.10, pinch=0.2, present=False))
-    assert DragEnd() in out
+    assert sm.state is State.PRESSED
+    sm.update(feat(t + 0.20, pinch=0.2, present=False))
+    assert sm.state is State.PRESSED  # still held, within DISARM_S
+    out = sm.update(feat(t + 0.20 + config.DISARM_S + 0.10, pinch=0.2, present=False))
+    assert ButtonUp() in out
     assert sm.state is State.DISARMED
 
 
-from gesture_control.types import Scroll, Space
+# --- The clutch: curling the index finger freezes the cursor ---
+
+
+def test_curling_the_index_freezes_the_cursor():
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, curl=1.10, ref=(0.9, 0.9)))
+    assert out == []
+    assert sm.state is State.FROZEN
+
+
+def test_frozen_emits_nothing_even_as_the_hand_keeps_moving():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, curl=1.10, ref=(0.9, 0.9)))
+    assert sm.state is State.FROZEN
+    out = sm.update(feat(t + 0.05, curl=1.10, ref=(0.1, 0.1)))
+    assert out == []
+    assert sm.state is State.FROZEN
+
+
+def test_uncurling_resumes_tracking():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, curl=1.10))
+    assert sm.state is State.FROZEN
+    sm.update(feat(t + 0.05, curl=1.71))
+    assert sm.state is State.TRACKING
+
+
+def test_uncurling_does_not_jump_the_cursor():
+    """The whole point of the clutch: repositioning the hand while frozen
+    must not produce a jump in the next Move once tracking resumes."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, ref=(0.5, 0.5)))
+    sm.update(feat(t + 0.05, curl=1.10, ref=(0.5, 0.5)))
+    assert sm.state is State.FROZEN
+    # Reposition the physical hand far away while frozen.
+    sm.update(feat(t + 0.10, curl=1.10, ref=(0.9, 0.9)))
+    # Uncurl at the new position: resuming tracking here must not replay
+    # the (0.5,0.5) -> (0.9,0.9) jump as a Move.
+    out = sm.update(feat(t + 0.15, curl=1.71, ref=(0.9, 0.9)))
+    moves = [i for i in out if isinstance(i, Move)]
+    assert moves == []
+    assert sm.state is State.TRACKING
+
+
+def test_curl_uses_hysteresis():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, curl=1.10))
+    assert sm.state is State.FROZEN
+    sm.update(feat(t + 0.05, curl=1.20))  # between CLOSE and OPEN
+    assert sm.state is State.FROZEN
+    sm.update(feat(t + 0.10, curl=1.35))  # above OPEN
+    assert sm.state is State.TRACKING
+
+
+def test_curling_while_pressed_does_not_release_the_button():
+    """Non-negotiable per the design: freezing the cursor must not release
+    the button. Curling the index while pinched keeps the button down, and
+    the cursor keeps following the hand regardless of curl."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    assert sm.state is State.PRESSED
+    out = sm.update(feat(t + 0.05, pinch=0.2, curl=1.10, ref=(0.6, 0.5)))
+    assert not any(isinstance(i, ButtonUp) for i in out)
+    assert sm.state is State.PRESSED
+    assert any(isinstance(i, Move) for i in out)
+
+
+def test_curling_while_pressed_then_releasing_still_emits_button_up():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.05, pinch=0.2, curl=1.10))
+    assert sm.state is State.PRESSED
+    out = sm.update(feat(t + 0.10, pinch=0.9, curl=1.10))
+    assert out == [ButtonUp()]
+
+
+# --- Scroll (unchanged behaviour, new resting-state name) ---
 
 TWO = (True, True, False, False)
 
@@ -352,7 +326,7 @@ def test_brief_two_finger_flash_does_not_enter_scroll():
     t = arm(sm)
     sm.update(feat(t, fingers=TWO))
     sm.update(feat(t + 0.10, fingers=TWO))
-    assert sm.state is State.ARMED_IDLE
+    assert sm.state is State.TRACKING
 
 
 def test_scroll_emits_on_vertical_motion():
@@ -381,7 +355,7 @@ def test_losing_two_finger_posture_leaves_scroll():
     sm.update(feat(t, fingers=TWO))
     sm.update(feat(t + 0.25, fingers=TWO))
     sm.update(feat(t + 0.40))
-    assert sm.state is State.ARMED_IDLE
+    assert sm.state is State.TRACKING
 
 
 def _sweep(sm, t, x_from, x_to, steps=8, span=0.20):
@@ -421,7 +395,7 @@ def test_slow_drift_does_not_emit_space():
     assert not any(isinstance(i, Space) for i in out)
 
 
-def test_sweep_while_pinched_does_not_emit_space():
+def test_sweep_while_pressed_does_not_emit_space():
     """A fast drag must never be read as a Space switch."""
     sm = StateMachine()
     t = arm(sm)

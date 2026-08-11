@@ -1,7 +1,65 @@
 # Gesture Control — Design
 
 Date: 2026-08-10
-Status: Approved, ready for implementation planning
+Status: Approved and implemented; amended 2026-08-11 (direct-manipulation redesign)
+
+## Amendment (2026-08-11): direct manipulation replaces trackpad mimicry
+
+The original model (below, largely unchanged) mapped a pinch to two
+different meanings at once: "move the cursor" while the pinch was held, and
+"start a drag" if the pinch was held *still enough, for long enough*. Those
+two meanings share the same physical gesture, so the system had to guess
+the user's intent from timing and travel alone.
+
+That guess cannot be made reliable. The user reports the cursor "shows drag
+when I am just moving the cursor" — and this is not a tuning miss. The user
+is pinched while aiming the cursor at a target, so any natural pause during
+aiming is indistinguishable, from travel and dwell alone, from the start of
+a deliberate drag. Raising `DRAG_DWELL_S` bought headroom, not a fix: at
+1.5 s the user's own genuine drag stopped registering at all, which means no
+dwell value in between separates "pausing while aiming" from "starting a
+drag" for this user. The two distributions overlap the same way the
+double-click timing windows did in the original double-click redesign
+(see "Double-click is a gesture, not a timing window" below) — the fix is
+the same shape: stop trying to infer intent from timing, and remove the
+ambiguity structurally instead.
+
+The new model is direct manipulation, proposed by the user:
+
+- **Point** the index finger and the cursor follows the hand, continuously,
+  with no pinch required.
+- **Pinch** (index + thumb) is a plain mouse button: down on close, up on
+  release. Nothing else. The cursor keeps following the hand while the
+  button is down, so a down/move/up sequence is a drag and a down/up
+  sequence in place is a click — decided by macOS, exactly as it would be
+  for a physical mouse, not by this codebase.
+- **Clutch:** because the cursor now tracks continuously, the user needs a
+  way to reposition their hand without moving the cursor (a physical mouse
+  gets this by lifting off the mat). Curling the index finger toward the
+  palm freezes the cursor; uncurling resumes tracking from wherever the
+  hand now is.
+
+The user is never pinched while merely aiming, so aiming can never be
+misread as a drag — the ambiguity is removed by construction, not tuned
+around. This also deletes the machinery that existed only to perform that
+classification: `TAP_MAX_S`, `TAP_MAX_PX`, `TAP2_MAX_PX`, `DRAG_DWELL_S`,
+and `DRAG_MAX_PX`, along with the release-classification code that read
+them. `Click(1)` is retired along with it — an index pinch no longer
+produces a `Click` intent of any kind. `Click(2)` (the middle-finger
+double-click gesture) is unaffected: it remains a single, independent
+pinch channel, resolved by the same closer-finger-at-pinch-down rule
+described below, because that rule's job — keeping a deliberate
+double-click from also registering as a spurious index button-down — is
+unrelated to the click/drag ambiguity that motivated this change.
+
+States, transitions, and the actuator's intent names were renamed to match:
+`DragStart`/`DragEnd` (which already mapped to `LeftMouseDown`/
+`LeftMouseUp`) are renamed `ButtonDown`/`ButtonUp` throughout, because that
+is what they now mean unconditionally rather than only during a
+dwell-classified drag. The rest of this document has been updated in place
+to describe the new model; sections that did not change (the posture gate,
+scroll, Space switching, filtering and gain, the actuator's non-button
+events, safety guards) are left as originally written.
 
 ## Goal
 
@@ -109,13 +167,14 @@ class HandFrame:
 class Features:
     pinch_ratio: float           # scale-invariant thumb-index distance
     pinch2_ratio: float          # scale-invariant thumb-middle distance
+    index_curl_ratio: float      # scale-invariant index-tip-to-wrist distance
     fingers_up: tuple[bool, ...] # index, middle, ring, pinky
     palm_facing: bool            # palm oriented toward camera
     hand_scale: float            # wrist → middle MCP, in frame widths
     cursor_ref: Point2           # index MCP, mirrored x
     t: float
 
-Intent = Move(dx, dy) | Click(n) | DragStart | DragEnd | Scroll(dy) | Space(dir)
+Intent = Move(dx, dy) | Click(n) | ButtonDown | ButtonUp | Scroll(dy) | Space(dir)
 ```
 
 ## Feature extraction
@@ -140,6 +199,13 @@ their chair.
 normalization applied to thumb-to-middle-fingertip distance. This drives the
 double-click gesture (see "Pinch disambiguation" below) — it is a second,
 independent pinch channel, not a derivative of `pinch_ratio`.
+
+**`index_curl_ratio`** = ‖landmark[8] − landmark[0]‖ / `hand_scale`, index
+fingertip to wrist. Drives the clutch (see "The clutch: freezing the
+cursor" below): curling the index finger toward the palm shrinks this
+ratio. **PROVISIONAL** — see "Tuning parameters" for why the current
+`INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` thresholds are not yet trustworthy
+beyond "a pinch is not a curl."
 
 **`fingers_up[f]`** = ‖tip − wrist‖ > 1.15 × ‖pip − wrist‖ for each of index,
 middle, ring, pinky. Comparing distances from the wrist rather than comparing y
@@ -174,55 +240,35 @@ near or far — usually a second person in frame or a hand reaching past the cam
 
 ## State machine
 
-States: `Disarmed`, `ArmedIdle`, `Tracking`, `Drag`, `Scroll`.
+States: `Disarmed`, `Frozen`, `Tracking`, `Pressed`, `Scroll`.
 
-All states fall back to `ArmedIdle` when their triggering posture ends, and to
-`Disarmed` when the gate drops.
+`Tracking` is the resting armed state: cursor follows the hand, no button held.
+`Frozen` is the clutch: armed, index curled, cursor does not move. `Pressed` is
+the button-down state: the cursor still follows the hand, so movement here is a
+drag. All states fall back to `Disarmed` when the gate drops; the gate itself
+(arming and disarming) is unchanged from the section above.
 
 ### Transitions
 
 | From | To | Trigger |
 |---|---|---|
-| `Disarmed` | `ArmedIdle` | posture gate arms |
-| `ArmedIdle` | `Tracking` | `pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30 (either finger); record anchor, time, and `click_n = 2 if pinch2_ratio < pinch_ratio else 1` |
-| `ArmedIdle` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
-| `ArmedIdle` | `ArmedIdle` | horizontal sweep → emit `Space` |
-| `Tracking` | `ArmedIdle` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); may emit `Click(click_n)` |
-| `Tracking` | `Drag` | pinch held > 1000 ms (`DRAG_DWELL_S`) with total movement < 25 px (`DRAG_MAX_PX` — its own budget, decoupled from the click travel budgets below); emit `DragStart` |
-| `Drag` | `ArmedIdle` | the pinch releases (same both-clear rule as above); emit `DragEnd` |
-| `Scroll` | `ArmedIdle` | scroll posture lost |
-| any | `Disarmed` | posture gate disarms; releases any held button first |
+| `Disarmed` | `Tracking` | posture gate arms |
+| `Tracking` | `Frozen` | index curls: `index_curl_ratio` < `INDEX_CURL_CLOSE` |
+| `Frozen` | `Tracking` | index uncurls: `index_curl_ratio` > `INDEX_CURL_OPEN` |
+| `Tracking` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
+| `Tracking` | `Tracking` | horizontal sweep → emit `Space` |
+| `Tracking` or `Frozen` | `Pressed` | pinch closes (`pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30, either finger) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
+| `Tracking` or `Frozen` | (unchanged) | pinch closes and the **middle** channel is the closer one; emit `Click(2)`, no state change |
+| `Pressed` | `Tracking` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); emit `ButtonUp` |
+| `Scroll` | `Tracking` | scroll posture lost |
+| any | `Disarmed` | posture gate disarms; releases the button first if held (see Safety) |
 
-**One combined pinch channel, closer finger wins.** There is a single pinch
-state, not two independent trackers: it closes the instant *either*
-`pinch_ratio` or `pinch2_ratio` crosses its own CLOSE threshold, and it does
-not reopen until *both* ratios have cleared their OPEN thresholds. At the
-moment it closes, whichever finger's ratio is numerically smaller — i.e.
-physically closer to the thumb on that frame — decides `click_n`:
-`click_n = 2 if pinch2_ratio < pinch_ratio else 1`. Both pinches otherwise
-behave identically once `Tracking` starts: either can move the cursor while
-held, and either can start a `Drag` past `DRAG_DWELL_S`, provided total
-travel since pinch-down stays under `DRAG_MAX_PX`. That stillness budget is
-deliberately its own constant, separate from the click travel budgets
-(`TAP_MAX_PX` / `TAP2_MAX_PX`) — see "Pinch disambiguation" below for why
-coupling them was a latent bug. Drag is never special-cased by which finger
-opened it.
-
-This replaces an earlier "index wins" fixed-priority rule (if the index
-pinch was closed on a given frame, that was unconditionally a single click,
-regardless of the middle finger) that live data proved wrong. Anatomically,
-pinching the middle fingertip to the thumb drags the index tip along with
-it: in `recordings/middle_pinch.jsonl` (15 s, 8 deliberate middle-pinches),
-43 of the 417 present frames read `pinch_ratio` < `PINCH_CLOSE` even though
-the user was never pinching their index finger. Under fixed priority that
-silently downgraded several intended double-clicks to single clicks — the
-replay produced `[Click(2), Click(1), Click(2), Click(1), Click(2)]`, 3
-doubles from 8 deliberate attempts. The closer-finger rule was validated
-against all three recordings (index taps never misread as doubles; the
-margin between the two ratios never approaches a tie: 0.32–0.66 during
-genuine index clicks, 0.09–0.41 during genuine middle pinches), so no
-dead-band between the two ratios was added — the data shows none is needed.
-**Do not reintroduce fixed priority between the two channels.**
+Curling the index while `Pressed` does **not** transition to `Frozen` and does
+**not** release the button — see "The clutch must never release the button"
+below. Releasing the pinch while `Frozen` returns to `Tracking` (not back to
+`Frozen`), matching the single `Pressed` → `Tracking` row above; if the index
+is still curled on the next frame, the ordinary curl transition freezes it
+again from there.
 
 ### Continuous emissions
 
@@ -231,38 +277,51 @@ Beyond transitions, three states emit on every frame they are active:
 | State | Emits each frame |
 |---|---|
 | `Tracking` | `Move(dx, dy)` from the filtered `cursor_ref` delta |
-| `Drag` | `Move(dx, dy)`, actuated as `LeftMouseDragged` |
+| `Pressed` | `Move(dx, dy)`, actuated as `LeftMouseDragged` |
 | `Scroll` | `Scroll(dy)` when vertical movement exceeds one pixel |
 
-`ArmedIdle` and `Disarmed` emit nothing. In particular, the cursor does not move in
-`ArmedIdle` — that is what makes the clutch a clutch.
+`Frozen` and `Disarmed` emit nothing. This is the whole mechanism: the cursor
+does not move in `Frozen` — that is what makes the clutch a clutch — and
+`Tracking` is the only state where a bare hand movement (no pinch) produces a
+`Move`.
 
-### Pinch disambiguation
+### The button: press and release, nothing else
 
-Click, cursor move, and drag all begin identically, from whichever pinch
-opened `Tracking`. The machine records position, time, and `click_n` (1 for
-index, 2 for middle) at pinch-down and decides from what follows:
+An index pinch is a plain mouse button. It does not classify click versus
+drag — that ambiguity does not exist in this model, because the cursor never
+moves from a pinch alone; it only ever moves because the hand moved, pinched
+or not. `ButtonDown` fires the instant the pinch closes; `ButtonUp` fires the
+instant it releases. macOS reads whatever happened to `Move` events in
+between: none means a click, any means a drag — the same interpretation it
+would apply to a physical mouse. There is no dwell timer, no travel budget,
+and no release-time classification left in this codebase to get wrong.
 
-| Outcome | Rule |
-|---|---|
-| Click | released within 550 ms, having moved less than the applicable click budget (`TAP_MAX_PX` for index, `TAP2_MAX_PX` for middle — currently equal at 60 px each); emits `Click(click_n)` |
-| Cursor move | moved beyond the applicable click budget before release — no button event ever fires |
-| Drag | held > 1000 ms (`DRAG_DWELL_S`) while staying under `DRAG_MAX_PX` (25 px), then movement drags |
-
-All distances here are **cursor screen pixels after gain is applied**, accumulated
-since pinch-down — not raw hand displacement. Measuring post-gain means the click
-tolerance stays constant in the space the user actually perceives it, rather than
-varying with how far the hand happens to be from the camera.
-
-`DRAG_MAX_PX` is a separate constant from the click budgets above, not a
-reuse of `TAP_MAX_PX`. Earlier, the drag trigger checked travel against
-`TAP_MAX_PX` directly, which meant loosening the click budget (to admit a
-real tap that drifted further than expected) would silently loosen the
-"hand is still enough to start a drag" check too — two unrelated tuning
-decisions sharing one knob. Splitting them out means `TAP_MAX_PX` can be
-recalibrated for click behaviour without retuning how easily a drag starts.
+**Closer-finger disambiguation still applies, and still matters.** There is a
+single combined pinch state, not two independent trackers: it closes the
+instant *either* `pinch_ratio` or `pinch2_ratio` crosses its own CLOSE
+threshold, and does not reopen until *both* ratios clear their OPEN
+thresholds. At the moment it closes, whichever finger's ratio is numerically
+smaller — physically closer to the thumb on that frame — decides the
+outcome: index closer → `ButtonDown` (may become a drag); middle closer →
+`Click(2)`, no state change. This is the one piece of the pre-redesign
+click/drag machinery that survives, and it survives for an unrelated reason:
+anatomically, pinching the middle fingertip to the thumb drags the index tip
+along with it, so the index channel often also reads closed during a
+deliberate middle pinch. Without the closer-finger check, that cross-talk
+would make a deliberate double-click also fire a spurious `ButtonDown` —
+which, if the hand moves at all before release, macOS reads as an accidental
+drag. In `recordings/middle_pinch.jsonl` (15 s, 8 deliberate middle-pinches),
+43 of the 417 present frames read `pinch_ratio` < `PINCH_CLOSE` even though
+the user was never pinching their index finger — that is the cross-talk this
+rule exists to filter. Validated against all three original recordings: the
+margin between the two ratios never approaches a tie (0.32–0.66 during
+genuine index clicks, 0.09–0.41 during genuine middle pinches). **Do not
+reintroduce fixed priority between the two channels** (e.g. "index always
+wins if closed") — that was the original rule and live data proved it wrong.
 
 #### Double-click is a gesture, not a timing window
+
+(Unchanged from the original diagnosis, restated for the current model.)
 
 Double-click was originally a Click whose predecessor had ended less than
 450 ms and 50 px away — the same index pinch, tapped twice quickly. Diagnosis
@@ -283,23 +342,27 @@ meaning a tighter distance window would have made the false-positive rate
 worse, not better. Only a 0.20 s window eliminated the false doubles in this
 data, which is faster than the user can deliberately double-tap — i.e. no
 timing window exists that admits the deliberate case and excludes the
-accidental ones.
+accidental ones. (This is the same shape of finding that motivated the
+2026-08-11 direct-manipulation redesign above: when two distributions
+genuinely overlap, no threshold fixes it, and the only sound move is to stop
+inferring intent from timing and remove the ambiguity structurally.)
 
 Given design principle 1 ("a wrong action is worse than no action") and that
 a false double-click opens a file instead of selecting it, the fix is to stop
-using timing at all. Double-click is now a **second, independent pinch
+using timing at all. Double-click is a **second, independent pinch
 channel** — middle-tip-to-thumb instead of index-tip-to-thumb — with its own
 hysteresis (`PINCH2_CLOSE` / `PINCH2_OPEN`) and no relationship to any
 previous click's timestamp or position:
 
-- index-tip-to-thumb pinch → `Click(1)`
+- index-tip-to-thumb pinch → `ButtonDown` / `ButtonUp` (click or drag,
+  decided by macOS — see above)
 - middle-tip-to-thumb pinch → `Click(2)`
 
 Thresholds are measured, not guessed: while genuinely index-pinching, the
 user's middle-to-thumb ratio (`pinch2_ratio`) ran 0.43–0.90 across their
 recordings (median 0.64), and across 1060 recorded frames only one dipped
 below 0.35. `PINCH2_CLOSE = 0.30` / `PINCH2_OPEN = 0.40` sit safely under
-that floor with hysteresis room to spare, so an ordinary index click does not
+that floor with hysteresis room to spare, so an ordinary index pinch does not
 misread as a double.
 
 **Do not reintroduce timing-based double-click detection.** The overlap
@@ -307,9 +370,46 @@ above is not a tuning problem to be solved with a different constant — the
 deliberate and accidental distributions genuinely overlap for this user, so
 no threshold on gap or distance can separate them.
 
-`Click(n)` is still emitted as a single intent (rather than two separate
-`Click(1)`s) so the actuator can set the Quartz click-state field directly,
-rather than posting two clicks and hoping macOS coalesces them.
+`Click(2)` is emitted the instant the pinch closes (not at release): unlike
+the old model, there is nothing left to wait for — no travel or dwell budget
+that a held middle pinch could still fail on. `Click(n)` remains a single
+intent (rather than two separate presses) so the actuator can set the Quartz
+click-state field directly, rather than posting two clicks and hoping macOS
+coalesces them.
+
+### The clutch: freezing the cursor
+
+Because the cursor now tracks the hand continuously, the user needs a way to
+lift off — reposition their hand in the air without dragging the cursor with
+it, the way lifting a physical mouse off the mat does. Curling the index
+finger toward the palm is that gesture: `index_curl_ratio` (index-tip-to-wrist
+distance, scale-normalized — see "Feature extraction") drops below
+`INDEX_CURL_CLOSE` and the machine enters `Frozen`, in which no `Move` is
+emitted regardless of how the hand moves. Uncurling past `INDEX_CURL_OPEN`
+resumes `Tracking`. Internally, the filtered reference point keeps updating
+every frame even while `Frozen` — only the *emission* of `Move` is
+suppressed — so resuming tracking never replays the frozen-period
+displacement as a jump.
+
+**The clutch must never release the button.** If the index curls while
+`Pressed`, the state does not change: the button stays down and the cursor
+keeps following the hand (curl is not even consulted while `Pressed`). The
+alternative — freezing during a drag — would mean a natural hand adjustment
+mid-drag silently drops whatever was being dragged, which is exactly the kind
+of "wrong action" design principle 1 rules out. This is deliberately
+independent of the freeze/track transitions above, which only apply from
+`Tracking` and `Frozen`.
+
+`index_curl_ratio` thresholds are **PROVISIONAL**. They are calibrated only
+against the existing recordings, incidentally, by measuring how the ratio
+behaves during ordinary pinching (median 1.39) versus an open hand (median
+1.71) — not against any recording of a deliberate curl gesture, because none
+existed yet. The only property actually verified is that a pinch is never
+misread as a curl (`INDEX_CURL_CLOSE = 1.15` sits comfortably below the 1.39
+pinching floor). Whether 1.15 / 1.30 are the right thresholds for a
+*deliberate* curl-to-freeze gesture is unverified and must be recalibrated
+against a dedicated recording before this is trusted in daily use. See
+"Tuning parameters" below.
 
 ### Hysteresis
 
@@ -317,11 +417,12 @@ Every threshold with a boundary gets two values, never one:
 
 - index pinch closes at 0.35, reopens at 0.45
 - middle pinch (double-click) closes at 0.30, reopens at 0.40
+- index curl closes at 1.15, reopens at 1.30 (PROVISIONAL — see above)
 - gate arms in 300 ms, disarms in 500 ms
 - scroll posture engages in 200 ms, releases immediately
 
 Single-valued thresholds chatter when the measurement sits near the boundary. That
-chatter surfaces as phantom double-clicks and flickering state, which is the most
+chatter surfaces as phantom clicks and flickering state, which is the most
 confusing possible failure for the user.
 
 ### Scroll
@@ -333,7 +434,8 @@ scrolling direction is matched to the system setting by reading
 
 ### Space switching
 
-Evaluated only in `ArmedIdle`, so a fast drag can never be read as a swipe.
+Evaluated only in `Tracking`, so a fast drag (`Pressed`) can never be read as
+a swipe.
 
 Fires when, with the open-palm posture held: horizontal velocity of `cursor_ref`
 exceeds 0.8 frame-widths/sec sustained for ≥ 100 ms, and net horizontal displacement
@@ -385,11 +487,17 @@ introduce a sign error).
 |---|---|
 | `Move` | `kCGEventMouseMoved` at the new absolute position |
 | `Click(n)` | `LeftMouseDown` + `LeftMouseUp`, with `kCGMouseEventClickState = n` |
-| `DragStart` | `LeftMouseDown` |
-| `Move` during `Drag` | `kCGEventLeftMouseDragged` |
-| `DragEnd` | `LeftMouseUp` |
+| `ButtonDown` | `LeftMouseDown` |
+| `Move` during `Pressed` | `kCGEventLeftMouseDragged` |
+| `ButtonUp` | `LeftMouseUp` |
 | `Scroll` | `CGEventCreateScrollWheelEvent`, `kCGScrollEventUnitPixel` |
 | `Space(left/right)` | keycode 123 / 124 with `kCGEventFlagMaskControl` |
+
+`ButtonDown` / `ButtonUp` are a rename of what this table originally called
+`DragStart` / `DragEnd` — the Quartz calls were always exactly this (a plain
+mouse-down and mouse-up), and the 2026-08-11 redesign made that literal
+meaning the *only* meaning, so the names were changed to match rather than
+continuing to describe a classification (drag) the code no longer performs.
 
 ## Safety
 
@@ -400,8 +508,8 @@ movement rubber-bands a selection or drags a file somewhere unintended.
 Three independent guards, because any one of them can be bypassed by a different
 failure mode:
 
-1. **Watchdog** — in `Drag`, if the hand is absent for > 500 ms, emit `DragEnd`.
-   Covers detection dropout and the user simply walking away.
+1. **Watchdog** — in `Pressed`, if the hand is absent for > 500 ms, emit
+   `ButtonUp`. Covers detection dropout and the user simply walking away.
 2. **Exit handlers** — button release registered in `atexit` and in `SIGINT` /
    `SIGTERM` handlers. Covers Ctrl-C and ordinary termination.
 3. **Kill switch** — `Esc` immediately disarms and releases everything. Covers the
@@ -413,7 +521,7 @@ recovery: click once anywhere.
 ## Feedback: the HUD
 
 A small always-on-top pill in a screen corner showing the current state, one of
-`disarmed / armed / tracking / drag / scroll`.
+`disarmed / frozen / tracking / pressed / scroll`.
 
 This is a requirement, not decoration. Gesture input provides no physical
 confirmation — nothing tells the user whether a pinch registered or was ignored.
@@ -431,43 +539,60 @@ Three layers, matching the module purity boundary.
 runtime.
 
 - `features`: pinch ratio is invariant to hand scale and to rotation; `pinch2_ratio`
-  is likewise scale-invariant and independent of the index pinch; finger
+  is likewise scale-invariant and independent of the index pinch; `index_curl_ratio`
+  is likewise scale-invariant and independent of the pinch; finger
   extension is correct for known hand poses; mirroring is applied exactly once
 - `gate`: arms only after the full dwell; does not disarm when fingers curl to
   pinch (the asymmetry above); rejects out-of-range `hand_scale`
-- `state_machine`: each row of the transition and disambiguation tables, including
-  the boundaries — a 249 ms release clicks, a 251 ms release does not
+- `state_machine`: each row of the transition table, including the
+  closer-finger disambiguation, the clutch (curl freezes and does not jump on
+  resume; curl while `Pressed` never releases the button), and the
+  stuck-button watchdog
 - `filters`: One Euro converges on constant input; gain curve is monotonic and
   respects its clamps
 
 **Replay tests.** `recorder.py` writes real sessions as `.jsonl` (landmarks +
 timestamps). Replaying a recording through the state machine must yield an exact
-intent sequence. Seed recordings to capture:
+intent sequence. The six behavioural fixtures below were all recorded under the
+OLD trackpad-mimicry model; replaying them against the new state machine changes
+what they demonstrate but not their purpose:
 
-- five deliberate clicks → exactly `[Click(1)] × 5`
-- a drag from A to B → exactly one `DragStart`, then `Move`s, then one `DragEnd`
-- a hand reaching past the camera for a coffee cup → zero intents
-- talking with hands in frame for 30 s → zero intents
-- one sweep → exactly one `Space`
-- eight deliberate middle-pinches → mostly `Click(2)`, proving the disambiguation
-  fires from real motion rather than only in synthetic unit tests
+- `five_clicks.jsonl` (five deliberate index taps) → five `ButtonDown`/`ButtonUp`
+  pairs, no `Click`
+- `drag_a_to_b.jsonl` → exactly one `ButtonDown`, then `Move`s, then one
+  `ButtonUp` — no dwell classification left to demonstrate, just the raw
+  press/move/release sequence
+- a hand reaching past the camera for a coffee cup → zero intents,
+  **non-negotiable** (see below)
+- talking with hands in frame for 30 s → zero intents, **non-negotiable**
+- `one_sweep.jsonl` → exactly one `Space`
+- `middle_pinch.jsonl` (8 deliberate middle-pinches) → `Click(2)`s, proving the
+  closer-finger disambiguation fires from real motion rather than only in
+  synthetic unit tests
 
 `one_double_click.jsonl` and `live_clicks.jsonl` predate the middle-pinch
 gesture — both were recorded as rapid index taps under the old timing-based
 design, and both used to contain false `Click(2)`s (`live_clicks.jsonl` had
 three). They are kept as the regression test for exactly that misfire: under
-the current design both must yield only `Click(1)`s and never a `Click(2)`.
+the current design both must yield `ButtonDown`/`ButtonUp` pairs only and
+never a `Click(2)`.
 
 `recordings/middle_pinch.jsonl` (added 2026-08-11) is the fixture that
-disproved the original "index wins" fixed-priority rule — see "Pinch
-disambiguation" above. Its replay is not asserted to an exact click count:
-alongside its 8 deliberate middle-pinches it also contains one accidental
-drag (a 2.568 s hold) and two genuine index pinches, which is real user
-behaviour worth preserving in the fixture rather than noise to assert away.
+disproved the original "index wins" fixed-priority rule — see "The button:
+press and release, nothing else" above. Under the new model, with no
+travel or dwell budget left to lose registrations to, its replay yields more
+`Click(2)`s than it did under any prior rule (see the redesign report for
+the exact count) — the closer-finger check is still what keeps those closures
+from also firing a spurious `ButtonDown`.
 
 The false-positive fixtures (reaching past, talking hands) are the
 regression net that lets thresholds be retuned later without silently
-reintroducing stray clicks.
+reintroducing stray output. They matter more under the new model than the
+old one: because `Tracking` now emits a `Move` on nearly every frame, a gate
+that mis-arms during either recording would produce a stream of stray
+cursor movement, not just an occasional stray click. If either fixture
+starts emitting anything, the fix is to tune the gate — not to weaken the
+assertion.
 
 **Manual smoke checklist** for `actuator` and `hud`, the two modules that must
 touch the real OS. Run with `--dry-run` first, then live.
@@ -475,43 +600,37 @@ touch the real OS. Run with `--dry-run` first, then live.
 **Dry-run mode.** `--dry-run` substitutes a logging actuator: the full pipeline
 runs, the HUD is live, and no real events are posted. All threshold tuning happens
 here. `main.py` coalesces consecutive `move` log lines into a single `move xN`
-summary — `move` fires roughly once per camera frame (~30/s), so printed
-one-per-line it drowns out the discrete events (clicks, drags, scrolls,
-spaces) that tuning actually needs to see; those still print immediately, one
-line each. This is display-only bookkeeping in `main.py`, not a change to
-what the actuator logs or to `DryRunActuator.log`.
+summary — `move` fires roughly once per camera frame (~30/s), and now fires
+throughout `Tracking` as well as `Pressed`, so printed one-per-line it
+drowns out the discrete events (clicks, button down/up, scrolls, spaces)
+that tuning actually needs to see; those still print immediately, one line
+each. This is display-only bookkeeping in `main.py`, not a change to what
+the actuator logs or to `DryRunActuator.log`.
 
 ## Tuning parameters
 
-The click and drag values below are no longer estimates: they were calibrated
-against real recordings, first on 2026-08-10 and again on 2026-08-11. The
-first guesses were badly wrong — `TAP_MAX_S` at 250 ms rejected every one of
-five deliberate taps (which held 370-470 ms), and `TAP_MAX_PX` at 15 px sat
-in the middle of the observed 12.8-16.7 px travel distribution, the least
-stable place a threshold can be. A second pass on 2026-08-11, across a wider
-set of the user's real taps (`live_clicks.jsonl` and `five_clicks.jsonl`, 17
-taps total), found the resulting `TAP_MAX_PX` of 25 px still rejected one
-genuine tap on travel alone (16/17 registered); 60 px is where all 17
-register, so it was raised there. That change is only safe because of a
-companion split: the drag trigger's stillness check now has its own budget,
-`DRAG_MAX_PX`, instead of reusing `TAP_MAX_PX` — otherwise loosening the
-click budget would have silently made drags easier to start too. The same
-pass also raised `DRAG_DWELL_S` from 700 ms to 1000 ms: the user's genuine
-drag still fires at 1.0 s but stops firing entirely at 1.5 s, so 1.0 s is a
-measured ceiling, not a round-number guess — raising it further needs
-re-measuring. The remaining values are still estimates. They live in one
-`config.py` so tuning never means hunting through logic.
+As of the 2026-08-11 direct-manipulation redesign, five parameters that
+existed purely to classify click versus drag are gone: `TAP_MAX_S`,
+`TAP_MAX_PX`, `TAP2_MAX_PX`, `DRAG_DWELL_S`, `DRAG_MAX_PX`. They were
+calibrated carefully (the history is preserved in git for anyone who needs
+it) and still produced the reported bug — because the problem was never
+mistuning, it was that the classification they performed cannot be made
+reliable from timing and travel alone. Removing them is the fix, not a
+simplification made at the cost of losing that calibration work.
+
+`PINCH_CLOSE` / `PINCH_OPEN` and `PINCH2_CLOSE` / `PINCH2_OPEN` are
+unchanged and still calibrated against the same real recordings described
+below their original entries. `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` are new
+and **PROVISIONAL** — see "The clutch: freezing the cursor" above for what
+is and is not verified about them. All other parameters (gate, gain, scroll,
+swipe, filter) are unchanged by this redesign.
 
 | Parameter | Start | Governs |
 |---|---|---|
-| `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | index pinch detection, with hysteresis |
+| `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | index pinch detection (button down/up), with hysteresis |
 | `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
+| `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` | 1.15 / 1.30 | **PROVISIONAL.** Clutch (freeze/resume) detection, with hysteresis. Measured only against existing recordings, not a dedicated curl recording: index-tip-to-wrist ratio runs ~1.39 while pinching and ~1.71 with the hand open, so the CLOSE threshold sits below the pinching floor to guarantee a pinch is never misread as a curl. Whether these are right for a deliberate curl gesture is unverified; recalibrate against a real clutch recording before trusting them |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
-| `TAP_MAX_S` | 550 | click vs. cursor move (shared by both click kinds) |
-| `TAP_MAX_PX` | 60 (was 25) | index-tap travel budget — raised 2026-08-11 after 17-tap measurement across `live_clicks.jsonl`/`five_clicks.jsonl` showed 25 px rejected 1 of 17; safe only because of the `DRAG_MAX_PX` split below |
-| `TAP2_MAX_PX` | 60 | middle-pinch (double-click) travel budget — looser than the *original* `TAP_MAX_PX` because closing the middle finger disturbs the whole hand about twice as much (median reference motion 5.31 vs. 2.66, normalized units x1000, across real recordings); measured 6/8 real middle-pinch attempts register at 60 px against 3/8 at 25 px, with the two remaining failures being a genuine 2.6 s hold (correctly a drag) and one that moved 283 px. Now numerically equal to `TAP_MAX_PX` since the latter was also raised to 60 px |
-| `DRAG_MAX_PX` | 25 | drag trigger's own stillness budget, decoupled from `TAP_MAX_PX` on 2026-08-11 — the user's real drag has travelled 15-25 px by the time the dwell elapses, so budgets below 20 px would stop genuine drags from starting |
-| `DRAG_DWELL_S` | 1000 (was 700) | drag vs. move; raised 2026-08-11 — the user's genuine drag still fires at 1.0 s, stops firing at 1.5 s, so 1.0 s is a measured ceiling. Must stay strictly greater than `TAP_MAX_S` (550 ms) or a tap could be reclassified as a drag before it ever releases |
 | `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |
 | `SCROLL_GAIN` | 900 | scroll speed |
@@ -548,7 +667,8 @@ Accepted for this version, documented so they are not rediscovered as bugs.
   One Euro, low-speed gain) but cannot eliminate it.
 - **Lighting dependence.** Detection degrades in dim or strongly backlit
   conditions. The HUD confidence dot makes this visible rather than mysterious.
-- **Arm fatigue.** Sustained use is tiring regardless of design. The clutch model
-  helps by allowing the hand to rest between movements, but this is a real ceiling
-  on session length.
+- **Arm fatigue.** Sustained use is tiring regardless of design. The clutch
+  (curl to freeze, uncurl to resume) helps by letting the hand rest or
+  reposition without the cursor following it, but this is a real ceiling on
+  session length.
 - **Single display only.** Cursor is clamped to the primary display.

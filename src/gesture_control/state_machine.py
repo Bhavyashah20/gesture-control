@@ -1,25 +1,34 @@
 from __future__ import annotations
 
-import math
 from collections import deque
 from enum import Enum, auto
 
 from . import config
 from .filters import Point2Filter, apply_gain
 from .gate import Gate
-from .types import Click, DragEnd, DragStart, Features, Intent, Move, Point2, Scroll, Space
+from .types import ButtonDown, ButtonUp, Click, Features, Intent, Move, Point2, Scroll, Space
 
 
 class State(Enum):
     DISARMED = auto()
-    ARMED_IDLE = auto()
+    FROZEN = auto()
     TRACKING = auto()
-    DRAG = auto()
+    PRESSED = auto()
     SCROLL = auto()
 
 
 class StateMachine:
-    """Pure gesture logic. Consumes Features, produces Intents. No I/O."""
+    """Pure gesture logic. Consumes Features, produces Intents. No I/O.
+
+    Direct-manipulation model (2026-08-11 redesign): while armed, the cursor
+    follows the hand continuously (TRACKING). Curling the index finger
+    freezes the cursor (FROZEN) so the hand can be repositioned without
+    moving it -- the clutch. Pinching index-to-thumb is a plain mouse
+    button: down on close, up on release (PRESSED); it no longer classifies
+    click vs. drag, because macOS already does that correctly from a
+    down/move/up sequence. Pinching middle-to-thumb remains its own
+    gesture, an explicit Click(2), independent of PRESSED.
+    """
 
     def __init__(self) -> None:
         self._gate = Gate()
@@ -28,10 +37,8 @@ class StateMachine:
         self._ref: Point2 | None = None
         self._t: float | None = None
         self._pinch_closed = False
-        self._click_n: int | None = None
+        self._curled = False
         self._virtual = Point2(0.0, 0.0)
-        self._pinch_t0: float | None = None
-        self._pinch_travel = 0.0
         self._scroll_since: float | None = None
         self._swipe_hist: deque[tuple[float, float]] = deque()
         self._swipe_last: float | None = None
@@ -46,11 +53,9 @@ class StateMachine:
 
     def _reset_transient(self) -> None:
         self._pinch_closed = False
-        self._click_n = None
+        self._curled = False
         self._ref = None
         self._t = None
-        self._pinch_t0 = None
-        self._pinch_travel = 0.0
 
     @staticmethod
     def _update_pinch(f: Features, closed: bool) -> tuple[bool, bool, bool]:
@@ -74,12 +79,20 @@ class StateMachine:
                 return True, True, False
         return closed, False, False
 
-    def _classify_release(self, f: Features) -> list[Intent]:
-        held = f.t - self._pinch_t0 if self._pinch_t0 is not None else 0.0
-        tap_max_px = config.TAP2_MAX_PX if self._click_n == 2 else config.TAP_MAX_PX
-        if held > config.TAP_MAX_S or self._pinch_travel >= tap_max_px:
-            return []
-        return [Click(self._click_n)]
+    @staticmethod
+    def _update_curl(f: Features, curled: bool) -> bool:
+        """Hysteresis step for the index-curl clutch signal.
+
+        PROVISIONAL thresholds -- see config.py's INDEX_CURL_CLOSE /
+        INDEX_CURL_OPEN comment.
+        """
+        if curled:
+            if f.index_curl_ratio > config.INDEX_CURL_OPEN:
+                return False
+        else:
+            if f.index_curl_ratio < config.INDEX_CURL_CLOSE:
+                return True
+        return curled
 
     def _detect_swipe(self, f: Features) -> list[Intent]:
         self._swipe_hist.append((f.t, f.cursor_ref.x))
@@ -108,8 +121,12 @@ class StateMachine:
         armed = self._gate.update(f)
 
         if not armed:
-            if self._state is State.DRAG:
-                intents.append(DragEnd())
+            # Stuck-button watchdog: if the gate disarms while the button is
+            # down (hand vanished, palm turned away, ...), release it before
+            # leaving. This must survive regardless of how PRESSED was
+            # entered or how long it was held.
+            if self._state is State.PRESSED:
+                intents.append(ButtonUp())
             self._state = State.DISARMED
             self._reset_transient()
             return intents
@@ -117,7 +134,7 @@ class StateMachine:
         ref = self._filter.filter(f.cursor_ref, f.t)
 
         if self._state is State.DISARMED:
-            self._state = State.ARMED_IDLE
+            self._state = State.TRACKING
             self._ref, self._t = ref, f.t
             return intents
 
@@ -127,65 +144,65 @@ class StateMachine:
         self._ref, self._t = ref, f.t
 
         self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
-
-        if self._state is State.ARMED_IDLE:
-            if pressed:
-                # Whichever finger is actually closer to the thumb at
-                # pinch-down decides the gesture -- see config.py for why.
-                self._click_n = 2 if f.pinch2_ratio < f.pinch_ratio else 1
-                self._state = State.TRACKING
-                self._pinch_t0 = f.t
-                self._pinch_travel = 0.0
-                self._scroll_since = None
-                self._swipe_hist.clear()
-                return intents
-
-            if f.fingers_up == (True, True, False, False):
-                if self._scroll_since is None:
-                    self._scroll_since = f.t
-                elif f.t - self._scroll_since >= config.SCROLL_DWELL_S:
-                    self._state = State.SCROLL
-                    self._scroll_since = None
-                return intents
-
-            self._scroll_since = None
-            return intents + self._detect_swipe(f)
+        self._curled = self._update_curl(f, self._curled)
 
         if self._state is State.SCROLL:
             if f.fingers_up != (True, True, False, False):
-                self._state = State.ARMED_IDLE
+                self._state = State.TRACKING
                 return intents
             px = dyn * config.SCROLL_GAIN
             if abs(px) >= config.SCROLL_MIN_PX:
                 intents.append(Scroll(px))
             return intents
 
-        if self._state is State.TRACKING:
+        if self._state is State.PRESSED:
             if released:
-                self._state = State.ARMED_IDLE
-                return self._classify_release(f)
-
-            dxp, dyp = apply_gain(dxn, dyn, dt)
-            if dxp or dyp:
-                self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)
-                self._pinch_travel += math.hypot(dxp, dyp)
-                intents.append(Move(dxp, dyp))
-
-            held = f.t - self._pinch_t0 if self._pinch_t0 is not None else 0.0
-            if held > config.DRAG_DWELL_S and self._pinch_travel < config.DRAG_MAX_PX:
-                self._state = State.DRAG
-                intents.append(DragStart())
-            return intents
-
-        if self._state is State.DRAG:
-            if released:
-                self._state = State.ARMED_IDLE
-                intents.append(DragEnd())
+                self._state = State.TRACKING
+                intents.append(ButtonUp())
                 return intents
+            # Curling the index while pinched must NOT release the button --
+            # the cursor keeps following the hand regardless of curl state.
             dxp, dyp = apply_gain(dxn, dyn, dt)
             if dxp or dyp:
                 self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)
                 intents.append(Move(dxp, dyp))
             return intents
 
-        return intents
+        # From here, self._state is TRACKING or FROZEN.
+        if pressed:
+            self._scroll_since = None
+            self._swipe_hist.clear()
+            # Whichever finger is actually closer to the thumb at pinch-down
+            # decides the gesture -- see config.py for why.
+            if f.pinch2_ratio < f.pinch_ratio:
+                intents.append(Click(2))
+            else:
+                self._state = State.PRESSED
+                intents.append(ButtonDown())
+            return intents
+
+        if self._state is State.FROZEN:
+            if not self._curled:
+                self._state = State.TRACKING
+            return intents
+
+        # TRACKING
+        if self._curled:
+            self._state = State.FROZEN
+            return intents
+
+        dxp, dyp = apply_gain(dxn, dyn, dt)
+        if dxp or dyp:
+            self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)
+            intents.append(Move(dxp, dyp))
+
+        if f.fingers_up == (True, True, False, False):
+            if self._scroll_since is None:
+                self._scroll_since = f.t
+            elif f.t - self._scroll_since >= config.SCROLL_DWELL_S:
+                self._state = State.SCROLL
+                self._scroll_since = None
+            return intents
+
+        self._scroll_since = None
+        return intents + self._detect_swipe(f)

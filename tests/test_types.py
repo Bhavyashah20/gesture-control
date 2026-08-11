@@ -1,5 +1,5 @@
 from gesture_control.types import (
-    Point2, Point3, HandFrame, Features, Move, Click, DragStart, DragEnd,
+    Point2, Point3, HandFrame, Features, Move, Click, ButtonDown, ButtonUp,
     Scroll, Space,
 )
 from gesture_control import config
@@ -18,7 +18,8 @@ def test_hand_frame_absent_has_no_points():
 
 def test_features_carry_four_fingers():
     f = Features(
-        pinch_ratio=0.5, pinch2_ratio=0.5, fingers_up=(True, True, False, False),
+        pinch_ratio=0.5, pinch2_ratio=0.5, index_curl_ratio=1.7,
+        fingers_up=(True, True, False, False),
         palm_facing=True, hand_scale=0.2, cursor_ref=Point2(0.5, 0.5), t=1.0,
         present=True,
     )
@@ -28,8 +29,8 @@ def test_features_carry_four_fingers():
 def test_intents_are_comparable_by_value():
     assert Move(1.0, 2.0) == Move(1.0, 2.0)
     assert Click(2) != Click(1)
-    assert DragStart() == DragStart()
-    assert DragEnd() == DragEnd()
+    assert ButtonDown() == ButtonDown()
+    assert ButtonUp() == ButtonUp()
     assert Scroll(3.0) == Scroll(3.0)
     assert Space("right") != Space("left")
 

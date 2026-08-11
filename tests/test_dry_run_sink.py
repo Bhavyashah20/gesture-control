@@ -34,8 +34,8 @@ def test_non_move_entries_print_immediately_every_time():
     c = MoveCoalescer(out.append, clock=_FakeClock())
     c.feed("click x1")
     c.feed("click x2")
-    c.feed("drag-start")
-    assert out == ["click x1", "click x2", "drag-start"]
+    c.feed("button-down")
+    assert out == ["click x1", "click x2", "button-down"]
 
 
 def test_a_long_run_of_moves_flushes_on_its_own_after_the_timeout():
