@@ -42,7 +42,13 @@ ARM_FINGERS_MIN = 3
 # deliberate taps hold 0.37-0.47 s (the original 0.250 rejected every one of
 # them), and tap travel reaches 16.7 px (the original 15.0 sat mid-distribution).
 TAP_MAX_S = 0.550
-TAP_MAX_PX = 25.0
+# TAP_MAX_PX history: first calibration (above) set this to 25.0. A later
+# pass across live_clicks.jsonl and five_clicks.jsonl (17 real index taps)
+# found 25 px rejects one of them (16/17 register); 60 px is where all 17
+# register. Raised to 60.0. Safe only because DRAG_MAX_PX now gives the drag
+# trigger its own, separate stillness budget -- before that split, loosening
+# this constant would have silently made drags easier to start too.
+TAP_MAX_PX = 60.0
 
 # The middle-pinch double-click gesture disturbs the hand about twice as
 # much as an index pinch (median reference motion 5.31 vs 2.66 in
@@ -54,7 +60,19 @@ TAP_MAX_PX = 25.0
 # 283 px.
 TAP2_MAX_PX = 60.0
 
-DRAG_DWELL_S = 0.700
+# The drag trigger's own stillness budget. Deliberately separate from
+# TAP_MAX_PX: how far a tap may drift and how still the hand must be to
+# begin a drag are unrelated decisions, and coupling them means tuning
+# clicks silently retunes drag. Measured: the user's real drag has travelled
+# between 15 and 25 px by the time the dwell elapses, so budgets below 20 px
+# stop genuine drags from starting at all.
+DRAG_MAX_PX = 25.0
+
+# Ceiling measured against the user's real drag: at 1.0 s it still fires; at
+# 1.5 s it stops firing entirely. Do not raise this further without
+# re-measuring. Must stay strictly greater than TAP_MAX_S (0.550), or a tap
+# would be reclassified as a drag before it can ever release as a click.
+DRAG_DWELL_S = 1.0
 
 BASE_GAIN_PX = 1600.0
 ACCEL_MIN = 0.35

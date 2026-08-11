@@ -188,7 +188,7 @@ All states fall back to `ArmedIdle` when their triggering posture ends, and to
 | `ArmedIdle` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
 | `ArmedIdle` | `ArmedIdle` | horizontal sweep → emit `Space` |
 | `Tracking` | `ArmedIdle` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); may emit `Click(click_n)` |
-| `Tracking` | `Drag` | pinch held > 700 ms with total movement < 25 px; emit `DragStart` |
+| `Tracking` | `Drag` | pinch held > 1000 ms (`DRAG_DWELL_S`) with total movement < 25 px (`DRAG_MAX_PX` — its own budget, decoupled from the click travel budgets below); emit `DragStart` |
 | `Drag` | `ArmedIdle` | the pinch releases (same both-clear rule as above); emit `DragEnd` |
 | `Scroll` | `ArmedIdle` | scroll posture lost |
 | any | `Disarmed` | posture gate disarms; releases any held button first |
@@ -201,8 +201,12 @@ moment it closes, whichever finger's ratio is numerically smaller — i.e.
 physically closer to the thumb on that frame — decides `click_n`:
 `click_n = 2 if pinch2_ratio < pinch_ratio else 1`. Both pinches otherwise
 behave identically once `Tracking` starts: either can move the cursor while
-held, and either can start a `Drag` past `DRAG_DWELL_S`. Drag is never
-special-cased by which finger opened it.
+held, and either can start a `Drag` past `DRAG_DWELL_S`, provided total
+travel since pinch-down stays under `DRAG_MAX_PX`. That stillness budget is
+deliberately its own constant, separate from the click travel budgets
+(`TAP_MAX_PX` / `TAP2_MAX_PX`) — see "Pinch disambiguation" below for why
+coupling them was a latent bug. Drag is never special-cased by which finger
+opened it.
 
 This replaces an earlier "index wins" fixed-priority rule (if the index
 pinch was closed on a given frame, that was unconditionally a single click,
@@ -241,14 +245,22 @@ index, 2 for middle) at pinch-down and decides from what follows:
 
 | Outcome | Rule |
 |---|---|
-| Click | released within 550 ms, having moved < 25 px; emits `Click(click_n)` |
-| Cursor move | moved > 25 px before release — no button event ever fires |
-| Drag | held > 700 ms while staying under 25 px, then movement drags |
+| Click | released within 550 ms, having moved less than the applicable click budget (`TAP_MAX_PX` for index, `TAP2_MAX_PX` for middle — currently equal at 60 px each); emits `Click(click_n)` |
+| Cursor move | moved beyond the applicable click budget before release — no button event ever fires |
+| Drag | held > 1000 ms (`DRAG_DWELL_S`) while staying under `DRAG_MAX_PX` (25 px), then movement drags |
 
 All distances here are **cursor screen pixels after gain is applied**, accumulated
 since pinch-down — not raw hand displacement. Measuring post-gain means the click
 tolerance stays constant in the space the user actually perceives it, rather than
 varying with how far the hand happens to be from the camera.
+
+`DRAG_MAX_PX` is a separate constant from the click budgets above, not a
+reuse of `TAP_MAX_PX`. Earlier, the drag trigger checked travel against
+`TAP_MAX_PX` directly, which meant loosening the click budget (to admit a
+real tap that drifted further than expected) would silently loosen the
+"hand is still enough to start a drag" check too — two unrelated tuning
+decisions sharing one knob. Splitting them out means `TAP_MAX_PX` can be
+recalibrated for click behaviour without retuning how easily a drag starts.
 
 #### Double-click is a gesture, not a timing window
 
@@ -472,12 +484,23 @@ what the actuator logs or to `DryRunActuator.log`.
 ## Tuning parameters
 
 The click and drag values below are no longer estimates: they were calibrated
-against real recordings on 2026-08-10. The first guesses were badly wrong —
-`TAP_MAX_S` at 250 ms rejected every one of five deliberate taps (which held
-370-470 ms), and `TAP_MAX_PX` at 15 px sat in the middle of the observed
-12.8-16.7 px travel distribution, the least stable place a threshold can be.
-The remaining values are still estimates. They live in one `config.py` so tuning never means hunting
-through logic.
+against real recordings, first on 2026-08-10 and again on 2026-08-11. The
+first guesses were badly wrong — `TAP_MAX_S` at 250 ms rejected every one of
+five deliberate taps (which held 370-470 ms), and `TAP_MAX_PX` at 15 px sat
+in the middle of the observed 12.8-16.7 px travel distribution, the least
+stable place a threshold can be. A second pass on 2026-08-11, across a wider
+set of the user's real taps (`live_clicks.jsonl` and `five_clicks.jsonl`, 17
+taps total), found the resulting `TAP_MAX_PX` of 25 px still rejected one
+genuine tap on travel alone (16/17 registered); 60 px is where all 17
+register, so it was raised there. That change is only safe because of a
+companion split: the drag trigger's stillness check now has its own budget,
+`DRAG_MAX_PX`, instead of reusing `TAP_MAX_PX` — otherwise loosening the
+click budget would have silently made drags easier to start too. The same
+pass also raised `DRAG_DWELL_S` from 700 ms to 1000 ms: the user's genuine
+drag still fires at 1.0 s but stops firing entirely at 1.5 s, so 1.0 s is a
+measured ceiling, not a round-number guess — raising it further needs
+re-measuring. The remaining values are still estimates. They live in one
+`config.py` so tuning never means hunting through logic.
 
 | Parameter | Start | Governs |
 |---|---|---|
@@ -485,9 +508,10 @@ through logic.
 | `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `TAP_MAX_S` | 550 | click vs. cursor move (shared by both click kinds) |
-| `TAP_MAX_PX` | 25 | index-tap travel budget |
-| `TAP2_MAX_PX` | 60 | middle-pinch (double-click) travel budget — looser than `TAP_MAX_PX` because closing the middle finger disturbs the whole hand about twice as much (median reference motion 5.31 vs. 2.66, normalized units x1000, across real recordings); measured 6/8 real middle-pinch attempts register at 60 px against 3/8 at 25 px, with the two remaining failures being a genuine 2.6 s hold (correctly a drag) and one that moved 283 px |
-| `DRAG_DWELL_MS` | 700 | drag vs. move |
+| `TAP_MAX_PX` | 60 (was 25) | index-tap travel budget — raised 2026-08-11 after 17-tap measurement across `live_clicks.jsonl`/`five_clicks.jsonl` showed 25 px rejected 1 of 17; safe only because of the `DRAG_MAX_PX` split below |
+| `TAP2_MAX_PX` | 60 | middle-pinch (double-click) travel budget — looser than the *original* `TAP_MAX_PX` because closing the middle finger disturbs the whole hand about twice as much (median reference motion 5.31 vs. 2.66, normalized units x1000, across real recordings); measured 6/8 real middle-pinch attempts register at 60 px against 3/8 at 25 px, with the two remaining failures being a genuine 2.6 s hold (correctly a drag) and one that moved 283 px. Now numerically equal to `TAP_MAX_PX` since the latter was also raised to 60 px |
+| `DRAG_MAX_PX` | 25 | drag trigger's own stillness budget, decoupled from `TAP_MAX_PX` on 2026-08-11 — the user's real drag has travelled 15-25 px by the time the dwell elapses, so budgets below 20 px would stop genuine drags from starting |
+| `DRAG_DWELL_S` | 1000 (was 700) | drag vs. move; raised 2026-08-11 — the user's genuine drag still fires at 1.0 s, stops firing at 1.5 s, so 1.0 s is a measured ceiling. Must stay strictly greater than `TAP_MAX_S` (550 ms) or a tap could be reclassified as a drag before it ever releases |
 | `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |
 | `SCROLL_GAIN` | 900 | scroll speed |

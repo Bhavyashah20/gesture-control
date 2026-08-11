@@ -168,21 +168,30 @@ def _dx_for_travel(target_px, dt=0.05, iters=60):
     return hi
 
 
-def test_middle_pinch_tap_between_thresholds_emits_click_two():
-    """The whole point of TAP2_MAX_PX: travel that would reject an index tap
-    must still register as a middle-pinch double-click."""
-    dx = _dx_for_travel((config.TAP_MAX_PX + config.TAP2_MAX_PX) / 2.0)
-    sm = StateMachine()
-    t = arm(sm)
-    sm.update(feat(t, pinch2=0.2))
-    sm.update(feat(t + 0.05, pinch2=0.2, ref=(0.5 + dx, 0.5)))
-    out = sm.update(feat(t + 0.10, pinch2=0.9))
-    assert out == [Click(2)]
+def test_tap2_budget_is_never_tighter_than_tap_budget():
+    """TAP2_MAX_PX must never be more restrictive than TAP_MAX_PX -- a
+    middle-pinch double-click disturbs the hand at least as much as an index
+    tap, so its travel budget should never be the smaller of the two.
+
+    This replaces a test that pinned a strict inequality (TAP2_MAX_PX
+    strictly looser than TAP_MAX_PX, with a real window of travel values
+    that would reject an index tap but accept a middle-pinch one). That
+    window relied on TAP_MAX_PX being 25 px against TAP2_MAX_PX's 60 px; once
+    TAP_MAX_PX was recalibrated to 60 px (see config.py) the two coincide and
+    the window collapsed to nothing. Middle-pinch classification itself is
+    unaffected -- it always used TAP2_MAX_PX, unchanged -- so this only
+    weakens the *assertable* invariant, not the runtime behaviour.
+    """
+    assert config.TAP2_MAX_PX >= config.TAP_MAX_PX
 
 
 def test_index_pinch_same_travel_emits_nothing():
-    """Same travel that a middle-pinch tolerates must still reject an index
-    tap -- this is what fails if the two thresholds get unified."""
+    """Travel at the boundary between TAP_MAX_PX and TAP2_MAX_PX must still
+    reject an index tap. Since TAP_MAX_PX was recalibrated to equal
+    TAP2_MAX_PX (both 60 px, see config.py), this boundary now sits exactly
+    at TAP_MAX_PX itself rather than strictly inside a looser middle-pinch
+    window -- see test_tap2_budget_is_never_tighter_than_tap_budget for that
+    relationship."""
     dx = _dx_for_travel((config.TAP_MAX_PX + config.TAP2_MAX_PX) / 2.0)
     sm = StateMachine()
     t = arm(sm)
@@ -267,6 +276,32 @@ def test_drag_emits_moves_then_one_drag_end():
     end = sm.update(feat(t + d + 0.30, pinch=0.9))
     assert end == [DragEnd()]
     assert sm.state is State.ARMED_IDLE
+
+
+def test_drag_uses_its_own_travel_budget_not_the_tap_one():
+    """DRAG_MAX_PX must govern the drag trigger, not TAP_MAX_PX. Travel that
+    sits strictly between the two -- past DRAG_MAX_PX but still under
+    TAP_MAX_PX -- must not be still enough to start a drag. This fails if the
+    drag trigger is ever reunified with TAP_MAX_PX: under the old, coupled
+    code this same travel (which is < TAP_MAX_PX) would have incorrectly let
+    the drag start.
+    """
+    assert config.DRAG_MAX_PX < config.TAP_MAX_PX
+    dx = _dx_for_travel((config.DRAG_MAX_PX + config.TAP_MAX_PX) / 2.0)
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.05, pinch=0.2, ref=(0.5 + dx, 0.5)))
+    out = sm.update(feat(t + config.DRAG_DWELL_S + 0.10, pinch=0.2))
+    assert not any(isinstance(i, DragStart) for i in out)
+    assert sm.state is State.TRACKING
+
+
+def test_drag_dwell_exceeds_tap_max_duration():
+    """DRAG_DWELL_S must stay strictly greater than TAP_MAX_S, or a quick tap
+    could be reclassified as a drag before it ever gets the chance to release
+    as a click."""
+    assert config.DRAG_DWELL_S > config.TAP_MAX_S
 
 
 def test_moving_before_the_dwell_prevents_a_drag():

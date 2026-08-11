@@ -78,6 +78,15 @@ def test_live_clicks_never_produce_a_double():
     assert Click(2) not in clicks
 
 
+def test_live_clicks_yields_exactly_twelve_single_clicks():
+    """Pins the effect of raising TAP_MAX_PX (see config.py). At the old
+    25 px budget this recording registered 11 clicks; one genuine tap was
+    rejected purely on travel. At 60 px it registers 12. If this count
+    regresses, TAP_MAX_PX has drifted from its measured calibration."""
+    clicks = [i for i in _replay("live_clicks") if isinstance(i, Click)]
+    assert clicks == [Click(1)] * 12
+
+
 def test_drag_yields_one_start_and_one_end():
     out = _replay("drag_a_to_b")
     assert len([i for i in out if isinstance(i, DragStart)]) == 1

@@ -172,7 +172,7 @@ class StateMachine:
                 intents.append(Move(dxp, dyp))
 
             held = f.t - self._pinch_t0 if self._pinch_t0 is not None else 0.0
-            if held > config.DRAG_DWELL_S and self._pinch_travel < config.TAP_MAX_PX:
+            if held > config.DRAG_DWELL_S and self._pinch_travel < config.DRAG_MAX_PX:
                 self._state = State.DRAG
                 intents.append(DragStart())
             return intents

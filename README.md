@@ -109,15 +109,38 @@ They are set well below the middle-to-thumb ratio observed while genuinely
 index-pinching, so an ordinary click does not misread as a double.
 
 `TAP2_MAX_PX` is the middle-pinch double-click's own travel budget, separate
-from `TAP_MAX_PX` (which still governs the index tap, and the drag rule
-regardless of finger). Closing the middle finger to the thumb disturbs the
-whole hand about twice as much as an index pinch — median frame-to-frame
-reference motion of 5.31 vs. 2.66 (normalized units x1000), measured across
-real recordings — so the single `TAP_MAX_PX`, calibrated against index
-pinches, rejected most genuine double-clicks on TRAVEL. At 60 px, 6 of 8 real
-middle-pinch attempts register, against 3 of 8 at 25 px; the two that still
-don't are a deliberate 2.6 s hold (correctly a drag) and one that genuinely
-moved 283 px, so raising the budget further would not help.
+from `TAP_MAX_PX` (which governs the index tap; the drag rule has its own
+budget too — see `DRAG_MAX_PX` below). Closing the middle finger to the
+thumb disturbs the whole hand about twice as much as an index pinch —
+median frame-to-frame reference motion of 5.31 vs. 2.66 (normalized units
+x1000), measured across real recordings — so the *original* `TAP_MAX_PX`
+(25 px), calibrated against index pinches, rejected most genuine
+double-clicks on TRAVEL. At 60 px, 6 of 8 real middle-pinch attempts
+register, against 3 of 8 at 25 px; the two that still don't are a deliberate
+2.6 s hold (correctly a drag) and one that genuinely moved 283 px, so
+raising the budget further would not help.
+
+`TAP_MAX_PX` was itself raised from 25 px to 60 px after a wider pass across
+the user's real taps (`live_clicks.jsonl` and `five_clicks.jsonl`, 17 taps
+total): at 25 px one genuine tap was rejected on travel alone (16/17
+registered); at 60 px all 17 register. `TAP2_MAX_PX` happens to land on the
+same 60 px value as a result, but the two remain independent constants,
+tuned for different gestures.
+
+That change is only safe because of `DRAG_MAX_PX`: the drag trigger's own
+stillness budget, deliberately decoupled from `TAP_MAX_PX`. Before the
+split, the drag trigger reused `TAP_MAX_PX` directly, so loosening the click
+budget would have silently made drags easier to start too — two unrelated
+tuning decisions sharing one knob. Measured against the user's real drag
+(15-25 px of travel by the time the dwell elapses), `DRAG_MAX_PX` stays at
+25 px; budgets below 20 px would stop genuine drags from starting.
+
+`DRAG_DWELL_S` was raised from 700 ms to 1000 ms in the same pass: the
+user's genuine drag still fires at 1.0 s but stops firing entirely at 1.5 s,
+so 1.0 s is a measured ceiling — don't raise it further without
+re-measuring. It must also stay strictly greater than `TAP_MAX_S` (550 ms),
+or a quick tap could be reclassified as a drag before it ever gets the
+chance to release as a click.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v
