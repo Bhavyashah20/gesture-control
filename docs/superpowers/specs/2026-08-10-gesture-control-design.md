@@ -669,8 +669,8 @@ scroll, swipe, filter) are unchanged by this redesign.
 | `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
 | `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` | 0.95 / 1.20 | Clutch (freeze/resume) detection, with hysteresis. Calibrated against `recordings/clutch.jsonl`: `index_curl_ratio` is cleanly bimodal (curled 0.56-0.9, pointing 1.6-2.04), and 0.95 sits in the wide gap between. The upper bound is set by the pinch floor (1.03, across all pinch-containing fixtures), not by pointing, so a pinch is never misread as a curl |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
-| `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
-| `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |
+| `BASE_GAIN_PX` | 2000 | cursor travel per hand movement; raised from 1600 to increase reach from 560 px to 1000 px per hand-sweep, enabling edge access on 1470 px display with index-curl clutch covering the rest; cost: hand tremor amplified |
+| `ACCEL_MIN` / `ACCEL_MAX` | 0.5 / 2.5 | precision floor vs. reach ceiling; ACCEL_MIN raised from 0.35 to 0.5 to increase slow-movement reach from 560 px to 1000 px per hand-sweep |
 | `SCROLL_GAIN` | 900 | scroll speed |
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no scroll is emitted |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |

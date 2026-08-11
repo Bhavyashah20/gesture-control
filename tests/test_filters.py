@@ -35,6 +35,10 @@ def test_point2_filter_returns_point2():
     assert p == (0.3, 0.7)
 
 
+def test_accel_config_bounds_are_consistent():
+    assert config.ACCEL_MIN < config.ACCEL_MAX
+
+
 def test_accel_is_clamped_at_both_ends():
     assert accel(0.0) == config.ACCEL_MIN
     assert accel(1e6) == config.ACCEL_MAX

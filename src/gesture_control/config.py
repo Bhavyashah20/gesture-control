@@ -71,8 +71,15 @@ INDEX_CURL_OPEN = 1.20
 # index_curl_ratio seen during any real pinch is 1.03 -- comfortably above
 # INDEX_CURL_CLOSE -- so no genuine pinch is ever suppressed by this rule.
 
-BASE_GAIN_PX = 1600.0
-ACCEL_MIN = 0.35
+# Slow-movement reach: hand-sweep pixels = BASE_GAIN_PX * ACCEL_MIN.
+# Previous tuning (1600 * 0.35 = 560 px) was insufficient for 1470 px display:
+# before reaching the edge, hand left the camera frame. Raised to 2000 * 0.5 =
+# 1000 px per hand-sweep; index-curl clutch covers the remaining 470 px.
+# Cost: hand tremor is amplified by the same factor, so small targets get
+# harder. Deliberate trade-off requested after measuring reach as the bigger
+# problem in practice.
+BASE_GAIN_PX = 2000.0
+ACCEL_MIN = 0.5
 ACCEL_MAX = 2.5
 ACCEL_VREF = 1.2
 
