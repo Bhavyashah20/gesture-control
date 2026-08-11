@@ -138,3 +138,31 @@ def test_space_then_button_down_does_not_leak_control_flag_onto_click():
     moves = _mouse_events(a._q)
     assert len(moves) == 1
     assert moves[0].flags == 0
+
+
+def test_scroll_clears_flags():
+    """Scroll events are built with CGEventCreateScrollWheelEvent and must
+    explicitly clear their flags to prevent inherited Control flags from
+    triggering accessibility screen zoom on macOS.
+    """
+    from gesture_control.types import Scroll
+
+    a = _bare_actuator()
+    a.apply([Scroll(dy=50)])
+    scrolls = [e for e in a._q.posted if e.kind == "scroll"]
+    assert len(scrolls) == 1
+    assert scrolls[0].flags == 0
+
+
+def test_space_then_scroll_does_not_leak_control_flag_onto_scroll():
+    """Regression test: Space posts Control-flagged key events; a Scroll
+    posted shortly after must not inherit that Control flag, since
+    Control+scroll triggers accessibility screen zoom on macOS.
+    """
+    from gesture_control.types import Scroll
+
+    a = _bare_actuator()
+    a.apply([Space("right"), Scroll(dy=50)])
+    scrolls = [e for e in a._q.posted if e.kind == "scroll"]
+    assert len(scrolls) == 1
+    assert scrolls[0].flags == 0

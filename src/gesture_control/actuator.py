@@ -156,6 +156,10 @@ class QuartzActuator:
                     ev = self._q.CGEventCreateScrollWheelEvent(
                         None, self._q.kCGScrollEventUnitPixel, 1, int(dy)
                     )
+                    # Scroll events must explicitly clear their flags to prevent
+                    # inherited Control flags from triggering accessibility screen
+                    # zoom. Same flag-clearing discipline as _post_mouse.
+                    self._q.CGEventSetFlags(ev, 0)
                     self._q.CGEventPost(self._q.kCGHIDEventTap, ev)
                 case Space(d):
                     self._key(KEY_RIGHT_ARROW if d == "right" else KEY_LEFT_ARROW)
