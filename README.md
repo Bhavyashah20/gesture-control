@@ -30,6 +30,21 @@ drag from that down/move/up sequence on its own, exactly as it would for a
 physical mouse, so there is no separate "hold still to drag" gesture to learn
 or mistune.
 
+Curling and pinching are mutually exclusive, on purpose: curling your index
+finger toward your palm brings the fingertip onto the thumb, which reads as
+a pinch geometrically — there is no way to tell the two apart from the
+landmark data alone. Measured directly: in `recordings/clutch.jsonl` (a
+recording of pointing and curling only, no pinching), every one of the 124
+curled frames also reads as a pinch, with `pinch_ratio` bottoming out at
+0.01. So while your index is curled, both pinch channels are ignored
+outright — a pinch reading during a curl is always spurious — and if a
+pinch was already open when the curl engages, the button is released, not
+held through the freeze. This used to be the opposite rule ("the clutch
+must never release the button"); it changed once it was clear the two
+signals aren't independent, because holding through a spurious pinch
+reading is exactly the stuck-button failure this project guards against
+everywhere else.
+
 This replaces an earlier design where a pinch meant both "move the cursor"
 and, if held still, "start a drag" — which meant any pause while aiming a
 pinch could be misread as the start of a drag. No dwell threshold separated
@@ -142,7 +157,10 @@ double-click from also registering as a spurious index button-down (see
 
 `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` govern the clutch: curling the index
 finger toward the palm freezes the cursor so you can reposition your hand
-without moving it. These are calibrated against `recordings/clutch.jsonl`, a
+without moving it. Curl and pinch are mutually exclusive (see "Gestures"
+above): while curled, both pinch channels are ignored, and an already-open
+button is released rather than held through the freeze. These are
+calibrated against `recordings/clutch.jsonl`, a
 dedicated 15 s recording that alternates between pointing and curling while
 moving the hand throughout. Its `index_curl_ratio` distribution is cleanly
 bimodal — curled at 0.56-0.9, pointing at 1.6-2.04, with a wide empty gap
@@ -181,10 +199,14 @@ above gets a chance to run.
   system's `com.apple.swipescrolldirection` preference. If you have natural
   scrolling turned off, scroll will feel inverted; negate `SCROLL_GAIN` in
   `config.py` as a workaround
-- `recordings/clutch.jsonl` (point/curl only, no pinching) replays to one
-  spurious `Click(2)` and one spurious `ButtonDown` that never releases —
-  both from `pinch_ratio`/`pinch2_ratio` transiently crossing their CLOSE
-  thresholds during ordinary curl motion, not from anything in the curl
-  calibration. `PINCH_CLOSE`/`PINCH2_CLOSE` were never calibrated against
-  sustained curling; this recording is the first to exercise it. Needs its
-  own investigation before being trusted
+- `recordings/clutch.jsonl` (point/curl only, no pinching) still replays to
+  one spurious `Click(2)`, at t=1.628s, where `index_curl_ratio` reads 1.936
+  — deep in the pointing cluster, nowhere near a curl. It is a transient
+  `pinch2_ratio` dip during ordinary pointing motion, unconnected to
+  curling, so the curl/pinch mutual-exclusivity fix (see "Gestures" above)
+  cannot address it. `PINCH_CLOSE`/`PINCH2_CLOSE` were never calibrated
+  against sustained hand motion of the kind in this recording; needs its own
+  investigation. The previously-reported stuck button from this same
+  recording (an unreleased `ButtonDown` at t=14.208s, where the pinch
+  reading was spurious *because* the index was curled) is fixed by the
+  mutual-exclusivity change and no longer occurs

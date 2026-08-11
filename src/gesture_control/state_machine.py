@@ -28,6 +28,16 @@ class StateMachine:
     click vs. drag, because macOS already does that correctly from a
     down/move/up sequence. Pinching middle-to-thumb remains its own
     gesture, an explicit Click(2), independent of PRESSED.
+
+    Curl and pinch are mutually exclusive by construction (2026-08-11 fix):
+    curling the index finger brings the fingertip onto the thumb, which
+    reads as a pinch geometrically -- recordings/clutch.jsonl (index-only
+    curling, never a real pinch) trips PINCH_CLOSE on every single curled
+    frame, bottoming out at pinch_ratio=0.01. So the curl check runs before
+    the pinch check every frame: while curled, both pinch channels are
+    ignored outright, and if a pinch was already open when the curl
+    engages, it is released (ButtonUp) in that same frame rather than held
+    through the freeze. See config.py's INDEX_CURL_CLOSE comment.
     """
 
     def __init__(self) -> None:
@@ -143,8 +153,21 @@ class StateMachine:
         dyn = ref.y - self._ref.y if self._ref is not None else 0.0
         self._ref, self._t = ref, f.t
 
-        self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
+        # Curl is evaluated before pinch, every frame: curling the index
+        # reads as a pinch geometrically (see class docstring), so a pinch
+        # reading while curled is always spurious and must never open a new
+        # press. If a real pinch was already open when the curl engages,
+        # release it now rather than trust the spurious reading to hold it.
         self._curled = self._update_curl(f, self._curled)
+        if self._curled:
+            pressed = False
+            if self._state is State.PRESSED and self._pinch_closed:
+                self._pinch_closed = False
+                released = True
+            else:
+                released = False
+        else:
+            self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
 
         if self._state is State.SCROLL:
             if f.fingers_up != (True, True, False, False):
@@ -157,11 +180,12 @@ class StateMachine:
 
         if self._state is State.PRESSED:
             if released:
-                self._state = State.TRACKING
                 intents.append(ButtonUp())
+                # A curl-forced release enters FROZEN directly (the curl
+                # that caused it is already in effect); an ordinary pinch
+                # release returns to plain TRACKING.
+                self._state = State.FROZEN if self._curled else State.TRACKING
                 return intents
-            # Curling the index while pinched must NOT release the button --
-            # the cursor keeps following the hand regardless of curl state.
             dxp, dyp = apply_gain(dxn, dyn, dt)
             if dxp or dyp:
                 self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)

@@ -56,6 +56,21 @@ ARM_FINGERS_MIN = 3
 INDEX_CURL_CLOSE = 0.95
 INDEX_CURL_OPEN = 1.20
 
+# Curl and pinch are mutually exclusive by construction (2026-08-11 fix).
+# Curling the index finger brings the fingertip onto the thumb, which is
+# geometrically indistinguishable from a pinch: in recordings/clutch.jsonl
+# (index-only curling, the user never pinches) every one of the 124 frames
+# classified as curled by INDEX_CURL_CLOSE above also trips PINCH_CLOSE,
+# with pinch_ratio bottoming out at 0.01; 56 of those 124 also trip
+# PINCH2_CLOSE. A pinch reading during a curl is therefore always spurious.
+# state_machine.py evaluates curl before pinch each frame and ignores both
+# pinch channels while curled, releasing an already-open button first if
+# one was held when the curl engaged (never silently dropping it). This is
+# safe against every genuine pinch on record: across the five
+# pinch-containing fixtures (374 genuine pinch frames total), the lowest
+# index_curl_ratio seen during any real pinch is 1.03 -- comfortably above
+# INDEX_CURL_CLOSE -- so no genuine pinch is ever suppressed by this rule.
+
 BASE_GAIN_PX = 1600.0
 ACCEL_MIN = 0.35
 ACCEL_MAX = 2.5

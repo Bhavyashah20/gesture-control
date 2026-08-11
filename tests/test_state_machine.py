@@ -292,28 +292,83 @@ def test_curl_uses_hysteresis():
     assert sm.state is State.TRACKING
 
 
-def test_curling_while_pressed_does_not_release_the_button():
-    """Non-negotiable per the design: freezing the cursor must not release
-    the button. Curling the index while pinched keeps the button down, and
-    the cursor keeps following the hand regardless of curl."""
+def test_curling_while_pressed_releases_the_button_and_freezes():
+    """Supersedes the old design decision ("the clutch must never release
+    the button"). That decision predates the discovery that curl and pinch
+    are not independent signals: curling the index brings the fingertip
+    onto the thumb, which reads as a pinch geometrically -- in
+    recordings/clutch.jsonl every one of 124 curled frames trips
+    PINCH_CLOSE, bottoming out at pinch_ratio=0.01. Since a pinch reading
+    during a curl is always spurious, holding the button through a curl
+    would mean trusting exactly that spurious reading to keep the mouse
+    down indefinitely -- the stuck-button failure mode this project guards
+    against everywhere else. So curling while PRESSED must now release the
+    button (emit ButtonUp) and enter FROZEN in the same frame, not hold
+    through it.
+    """
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
     assert sm.state is State.PRESSED
     out = sm.update(feat(t + 0.05, pinch=0.2, curl=CURLED, ref=(0.6, 0.5)))
-    assert not any(isinstance(i, ButtonUp) for i in out)
-    assert sm.state is State.PRESSED
-    assert any(isinstance(i, Move) for i in out)
+    assert out == [ButtonUp()]
+    assert sm.state is State.FROZEN
 
 
-def test_curling_while_pressed_then_releasing_still_emits_button_up():
+def test_uncurling_after_a_curl_release_resumes_tracking_without_reopening():
+    """After a curl forces the button up and the machine into FROZEN,
+    uncurling must return to plain TRACKING -- not silently reopen the
+    button from residual pinch state."""
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
     sm.update(feat(t + 0.05, pinch=0.2, curl=CURLED))
+    assert sm.state is State.FROZEN
+    out = sm.update(feat(t + 0.10, pinch=0.9, curl=UNCURLED))
+    assert out == []
+    assert sm.state is State.TRACKING
+
+
+def test_curling_ignores_a_spurious_pinch_reading():
+    """The core clutch fix. Curling the index brings the fingertip onto the
+    thumb, which is geometrically indistinguishable from a pinch --
+    recordings/clutch.jsonl (index-only curling, never a real pinch) reads
+    pinch_ratio as low as 0.01 on every one of its 124 curled frames, and
+    pinch2_ratio below PINCH2_CLOSE on 56 of them. While curled, both pinch
+    channels must be ignored entirely: no ButtonDown, no Click(2). The
+    machine goes straight to FROZEN instead.
+    """
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, curl=CURLED, pinch=0.01, pinch2=0.05, ref=(0.9, 0.9)))
+    assert out == []
+    assert sm.state is State.FROZEN
+
+
+def test_curling_ignores_a_spurious_pinch_reading_while_already_frozen():
+    """Same guarantee, sustained: once FROZEN, a continuing spurious pinch
+    reading must not open the button on a later frame either."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, curl=CURLED, pinch=0.01, ref=(0.9, 0.9)))
+    assert sm.state is State.FROZEN
+    out = sm.update(feat(t + 0.05, curl=CURLED, pinch=0.01, ref=(0.5, 0.5)))
+    assert out == []
+    assert sm.state is State.FROZEN
+
+
+def test_genuine_pinch_still_opens_when_index_not_curled():
+    """Pins the fix against over-suppression. BETWEEN sits inside the
+    hysteresis band, well above INDEX_CURL_CLOSE, matching the real
+    index_curl_ratio range measured during genuine pinches (1.03-1.39
+    across all five pinch-containing fixtures -- see config.py). At this
+    value the index reads as not-curled, so a pinch must still open
+    PRESSED exactly as it did before this fix."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, pinch=0.2, curl=BETWEEN))
+    assert out == [ButtonDown()]
     assert sm.state is State.PRESSED
-    out = sm.update(feat(t + 0.10, pinch=0.9, curl=CURLED))
-    assert out == [ButtonUp()]
 
 
 def test_releasing_an_ordinary_pinch_never_leaves_the_cursor_frozen():

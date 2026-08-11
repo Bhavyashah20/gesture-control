@@ -252,22 +252,26 @@ drag. All states fall back to `Disarmed` when the gate drops; the gate itself
 | From | To | Trigger |
 |---|---|---|
 | `Disarmed` | `Tracking` | posture gate arms |
-| `Tracking` | `Frozen` | index curls: `index_curl_ratio` < `INDEX_CURL_CLOSE` |
+| `Tracking` | `Frozen` | index curls: `index_curl_ratio` < `INDEX_CURL_CLOSE`, no pinch was open |
 | `Frozen` | `Tracking` | index uncurls: `index_curl_ratio` > `INDEX_CURL_OPEN` |
 | `Tracking` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
 | `Tracking` | `Tracking` | horizontal sweep → emit `Space` |
-| `Tracking` or `Frozen` | `Pressed` | pinch closes (`pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30, either finger) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
-| `Tracking` or `Frozen` | (unchanged) | pinch closes and the **middle** channel is the closer one; emit `Click(2)`, no state change |
+| `Tracking` or `Frozen` | `Pressed` | index not curled, pinch closes (`pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30, either finger) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
+| `Tracking` or `Frozen` | (unchanged) | index not curled, pinch closes and the **middle** channel is the closer one; emit `Click(2)`, no state change |
 | `Pressed` | `Tracking` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); emit `ButtonUp` |
+| `Pressed` | `Frozen` | index curls while a pinch is open: `index_curl_ratio` < `INDEX_CURL_CLOSE`; emit `ButtonUp` first (see "The clutch: freezing the cursor" below) |
 | `Scroll` | `Tracking` | scroll posture lost |
 | any | `Disarmed` | posture gate disarms; releases the button first if held (see Safety) |
 
-Curling the index while `Pressed` does **not** transition to `Frozen` and does
-**not** release the button — see "The clutch must never release the button"
-below. Releasing the pinch while `Frozen` returns to `Tracking` (not back to
-`Frozen`), matching the single `Pressed` → `Tracking` row above; if the index
-is still curled on the next frame, the ordinary curl transition freezes it
-again from there.
+**Curl and pinch are mutually exclusive.** Curl is evaluated before pinch on
+every frame, and while curled the pinch channels are not consulted at all —
+see "The clutch: freezing the cursor" below for why (a curled index reads as
+a pinch geometrically) and "The button: press and release, nothing else" for
+how this interacts with the closer-finger rule. Releasing the pinch while
+`Frozen` (the ordinary `Pressed` → `Tracking` path, reached only when curl
+did not cause the release) returns to `Tracking`, not back to `Frozen`; if
+the index is still curled on the next frame, the ordinary curl transition
+freezes it again from there.
 
 ### Continuous emissions
 
@@ -390,14 +394,33 @@ every frame even while `Frozen` — only the *emission* of `Move` is
 suppressed — so resuming tracking never replays the frozen-period
 displacement as a jump.
 
-**The clutch must never release the button.** If the index curls while
-`Pressed`, the state does not change: the button stays down and the cursor
-keeps following the hand (curl is not even consulted while `Pressed`). The
-alternative — freezing during a drag — would mean a natural hand adjustment
-mid-drag silently drops whatever was being dragged, which is exactly the kind
-of "wrong action" design principle 1 rules out. This is deliberately
-independent of the freeze/track transitions above, which only apply from
-`Tracking` and `Frozen`.
+**Curl and pinch are mutually exclusive (2026-08-11 fix), and the clutch
+releases the button rather than holding through a curl.** An earlier version
+of this spec said the opposite — "the clutch must never release the button,"
+with curl not even consulted while `Pressed` — on the reasoning that freezing
+mid-drag should not silently drop whatever was being dragged. That reasoning
+assumed curl and pinch were independent signals. They are not: curling the
+index finger toward the palm brings the fingertip onto the thumb, which is
+geometrically indistinguishable from a pinch. Measured directly against
+`recordings/clutch.jsonl` (a recording where the user only points and
+curls, never pinches): every one of the 124 frames classified as curled
+also reads `pinch_ratio` below `PINCH_CLOSE`, bottoming out at 0.01, and 56
+of those also cross `PINCH2_CLOSE`. So a pinch reading during a curl is
+always spurious, and the old rule meant trusting exactly that spurious
+reading to hold the button down indefinitely — before this fix, replaying
+`recordings/clutch.jsonl` left the state machine stuck in `Pressed`, an
+unreleased `ButtonDown`, the one failure mode this project guards against
+everywhere else.
+
+The fix: curl is evaluated before pinch on every frame. While curled, both
+pinch channels are ignored outright — no new `Pressed` transition, no
+`Click(2)` — and if a pinch was already open (`Pressed`) when the curl
+engages, it is released (`ButtonUp`) in that same frame, landing in `Frozen`
+rather than holding through the freeze. This is safe against every genuine
+pinch on record: the lowest `index_curl_ratio` measured during any of the
+374 genuine pinch frames across the five pinch-containing fixtures is 1.03,
+comfortably above `INDEX_CURL_CLOSE` — no real pinch is ever misclassified
+as a curl, so no real pinch is ever suppressed by this rule.
 
 `index_curl_ratio` thresholds are calibrated against
 `recordings/clutch.jsonl`, a dedicated 15 s recording that alternates
@@ -411,6 +434,18 @@ across all five pinch-containing fixtures, is 1.03, so `INDEX_CURL_OPEN =
 1.20` stays below the pointing cluster (for prompt uncurl detection) while
 never approaching the pinch floor (so a pinch is never misread as a curl).
 See "Tuning parameters" below.
+
+**Known gap, unrelated to curl:** `recordings/clutch.jsonl` still replays
+with one spurious `Click(2)`, at t=1.628s, where `index_curl_ratio` reads
+1.936 — deep in the pointing cluster, nowhere near `INDEX_CURL_CLOSE`. It is
+a transient `pinch2_ratio` dip during ordinary pointing motion with no
+connection to curling, so "ignore pinch while curled" cannot and does not
+address it; it is the same class of gap flagged in
+`.superpowers/sdd/2026-08-10-gesture-control/curl-calibration-report.md`
+("Blocking finding"), now narrowed from two spurious events (one of them a
+stuck button) to this one, non-stuck-button case. Fixing it would mean
+recalibrating `PINCH_CLOSE`/`PINCH2_CLOSE` against sustained hand motion —
+out of scope here; see the README's "Known limitations".
 
 ### Hysteresis
 
@@ -547,8 +582,10 @@ runtime.
   pinch (the asymmetry above); rejects out-of-range `hand_scale`
 - `state_machine`: each row of the transition table, including the
   closer-finger disambiguation, the clutch (curl freezes and does not jump on
-  resume; curl while `Pressed` never releases the button), and the
-  stuck-button watchdog
+  resume; curl and pinch are mutually exclusive -- curl is evaluated before
+  pinch every frame, the pinch channels are ignored while curled, and an
+  already-open button is released, not held, the instant a curl engages),
+  and the stuck-button watchdog
 - `filters`: One Euro converges on constant input; gain curve is monotonic and
   respects its clamps
 
