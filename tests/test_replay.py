@@ -6,7 +6,7 @@ from gesture_control import config
 from gesture_control.features import extract
 from gesture_control.recorder import read_session, replay, write_session
 from gesture_control.state_machine import StateMachine
-from gesture_control.types import ButtonDown, ButtonUp, Click, HandFrame, Point3, Space
+from gesture_control.types import ButtonDown, ButtonUp, Click, HandFrame, Point3, Scroll, Space
 
 
 def _frames():
@@ -146,6 +146,31 @@ def test_one_sweep_yields_exactly_one_space():
     spaces = [i for i in out if isinstance(i, Space)]
     assert len(spaces) == 1
     assert not any(isinstance(i, (ButtonDown, ButtonUp, Click)) for i in out)
+
+
+def test_scroll_attempt_produces_a_meaningful_amount_of_scroll():
+    """Regression test for the SCROLL_GAIN magnitude bug (see config.py):
+    the user reported "scroll does nothing." recordings/scroll_attempt.jsonl
+    is a 15 s deliberate scroll gesture where the posture detection and
+    state machine were already fine (53 Scroll intents fired even at the
+    old, too-weak gain) -- the bug was purely that the total distance those
+    intents added up to was imperceptible (220 px total, median event 2.4
+    px, at the pre-fix SCROLL_GAIN=900).
+
+    This does not pin an exact pixel total -- that would just re-encode
+    SCROLL_GAIN as a second magic number here and break on every future
+    retune -- it pins the property the bug violated: a deliberate 15 s
+    scroll gesture must add up to a scroll amount an order of magnitude
+    larger than "does nothing", not merely nonzero.
+    """
+    out = _replay("scroll_attempt")
+    scrolls = [i for i in out if isinstance(i, Scroll)]
+    assert len(scrolls) >= 30  # comfortably more than a couple of stray events
+    total = sum(abs(s.dy) for s in scrolls)
+    # A 900 px window's full height is the smallest amount that could
+    # plausibly read as "scroll happened" rather than "scroll did nothing" --
+    # the pre-fix total (220 px) sits well under it.
+    assert total > 900.0
 
 
 def test_middle_pinch_recording_yields_click_two_and_still_proves_disambiguation():

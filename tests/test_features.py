@@ -31,6 +31,7 @@ def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None,
     put(0, 0.50, 0.60, wrist_z)             # wrist
     put(9, 0.50, 0.40)                      # middle MCP -> hand_scale = 0.20
     put(5, 0.56, 0.42)                      # index MCP (raw: right of pinky)
+    put(13, 0.47, 0.42)                     # ring MCP (between middle and pinky)
     put(17, 0.44, 0.42)                     # pinky MCP
     put(4, 0.56, thumb_y, thumb_z)          # thumb tip
 
@@ -109,13 +110,37 @@ def test_finger_extension_detected_per_finger():
 
 
 def test_mirroring_applied_exactly_once():
-    """Raw index MCP at x=0.56 must surface as 1 - 0.56 = 0.44."""
+    """Raw MCP x's (index 0.56, middle 0.50, ring 0.47, pinky 0.44) must each
+    surface mirrored (1 - x) before being averaged: (0.44 + 0.50 + 0.53 +
+    0.56) / 4 = 0.5075. A double mirror, or a mirror applied after
+    averaging the raw values instead of before, would both give a different
+    number."""
     f = extract(make_hand())
-    assert math.isclose(f.cursor_ref.x, 0.44, abs_tol=1e-6)
+    assert math.isclose(f.cursor_ref.x, 0.5075, abs_tol=1e-6)
 
 
-def test_cursor_ref_is_index_knuckle_not_fingertip():
-    """Closing the pinch must barely move cursor_ref."""
+def test_cursor_ref_is_mean_of_the_four_mcp_knuckles():
+    """Pins the formula itself, independent of the mirroring test above:
+    cursor_ref must be the unweighted mean of landmarks 5, 9, 13, 17 (index,
+    middle, ring, pinky MCP), not a single knuckle and not some other
+    subset."""
+    f = extract(make_hand())
+    expected_x = (0.56 + 0.50 + 0.47 + 0.44) / 4  # raw, pre-mirror
+    expected_x = 1.0 - expected_x  # mirror is applied per-landmark, before averaging
+    expected_y = (0.42 + 0.40 + 0.42 + 0.42) / 4  # index, middle, ring, pinky MCP y's
+    assert math.isclose(f.cursor_ref.x, expected_x, abs_tol=1e-6)
+    assert math.isclose(f.cursor_ref.y, expected_y, abs_tol=1e-6)
+
+
+def test_cursor_ref_is_palm_centroid_not_fingertip():
+    """Closing the pinch (moving only the thumb tip, landmark 4) must barely
+    move cursor_ref: none of its four source landmarks (5, 9, 13, 17) sit
+    anywhere near the thumb or index fingertip. This is the property the
+    palm centroid inherits from -- and improves on -- the single-knuckle
+    design it replaced (see the spec's "cursor_ref" section): a fingertip
+    translates several millimetres during a pinch, which is what makes the
+    cursor jump at the exact instant of a pinch on a naive webcam pointer.
+    """
     a = extract(make_hand(pinch=0.90))
     b = extract(make_hand(pinch=0.05))
     moved = math.dist(a.cursor_ref, b.cursor_ref)

@@ -83,7 +83,26 @@ ACCEL_MIN = 0.5
 ACCEL_MAX = 2.5
 ACCEL_VREF = 1.2
 
-SCROLL_GAIN = 900.0
+# Raised from 900 (2026-08-11): the user reported "scroll does nothing."
+# recordings/scroll_attempt.jsonl (15 s, deliberate scrolling) proved the
+# posture detection and state machine were fine -- 260 of 444 present frames
+# match the scroll posture and the machine emits 53 Scroll intents -- the
+# problem was purely magnitude. At the old gain the whole 15 s gesture
+# produced 220 px of total scroll (median event 2.4 px), roughly two lines.
+#
+# Measured total vertical hand travel while the scroll posture holds
+# (filtered cursor_ref, summed frame-to-frame, over every posture-matching
+# frame regardless of dwell) is 0.429 frame-heights. Naively scaling that
+# raw travel by the gain projects 386 px at 900 and ~2145 px at 5000. That
+# naive projection is optimistic, though: the real pipeline only scrolls
+# once SCROLL_DWELL_S has elapsed and drops any single event under
+# SCROLL_MIN_PX, so actual replay output runs below it at both gains --
+# 220 px actual vs. 386 px projected at the old GAIN=900. Replayed for
+# real at GAIN=5000 through the full pipeline (this fix plus the palm-
+# centroid cursor_ref and the jitter deadzone, both below): 118 Scroll
+# intents totaling 1362 px (median 3.9 px) -- about 6.2x more scroll for
+# the same gesture, comfortably past "does nothing."
+SCROLL_GAIN = 5000.0
 SCROLL_DWELL_S = 0.200
 SCROLL_MIN_PX = 1.0
 
@@ -92,6 +111,20 @@ SWIPE_DIST = 0.20
 SWIPE_HOLD_S = 0.100
 SWIPE_WINDOW_S = 0.350
 SWIPE_COOLDOWN_S = 0.800
+
+# Added 2026-08-11: the user cannot hold the cursor still enough to land on
+# small targets like window close buttons. A plain deadzone that discards
+# sub-threshold motion outright would also swallow slow, deliberate
+# movement -- precision movement IS slow movement -- so state_machine.py
+# instead accumulates sub-threshold pixel deltas in a residual and only
+# emits Move once the residual's magnitude crosses this threshold, resetting
+# to zero on emission. Random tremor is directionless and cancels within the
+# residual (cursor sits genuinely still); consistent slow movement is
+# directional and keeps accumulating (still reaches its target, just in
+# slightly coarser steps once every few frames instead of every frame).
+# 2.0 px was chosen as comfortably above single-pixel sensor/filter noise
+# but small enough not to be felt as added lag during deliberate movement.
+MOVE_DEADZONE_PX = 2.0
 
 EURO_MIN_CUTOFF = 0.4
 # Lowered from 1.0 (2026-08-11): 1.0 was fine at the old gain, but at

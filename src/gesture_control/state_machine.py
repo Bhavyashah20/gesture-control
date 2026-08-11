@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import deque
 from enum import Enum, auto
 
@@ -63,6 +64,11 @@ class StateMachine:
         self._scroll_since: float | None = None
         self._swipe_hist: deque[tuple[float, float]] = deque()
         self._swipe_last: float | None = None
+        # Jitter accumulator (see config.py's MOVE_DEADZONE_PX comment):
+        # sub-threshold per-frame pixel deltas accumulate here instead of
+        # being emitted or discarded outright.
+        self._move_residual_x = 0.0
+        self._move_residual_y = 0.0
 
     @property
     def state(self) -> State:
@@ -77,6 +83,39 @@ class StateMachine:
         self._curled = False
         self._ref = None
         self._t = None
+        self._reset_move_residual()
+
+    def _reset_move_residual(self) -> None:
+        """Called on disarm and on every transition into FROZEN (the
+        clutch) so a residual accumulated before the reset can never
+        combine with fresh motion afterward to fire an oversized jump. See
+        config.py's MOVE_DEADZONE_PX comment."""
+        self._move_residual_x = 0.0
+        self._move_residual_y = 0.0
+
+    def _accumulate_move(self, dxp: float, dyp: float) -> list[Intent]:
+        """Jitter deadzone with accumulation (see config.py's
+        MOVE_DEADZONE_PX comment). Adds this frame's gained pixel delta to
+        the residual; emits a Move for the full residual and resets it to
+        zero once the residual's magnitude crosses MOVE_DEADZONE_PX,
+        otherwise emits nothing and keeps the residual for next frame.
+
+        Random tremor is random in direction, so it cancels within the
+        residual and the cursor sits genuinely still. Consistent slow
+        movement is directional, so it keeps accumulating and still emits
+        -- just in coarser steps than one Move per frame. This is what
+        makes the deadzone safe for precision movement, which is slow
+        movement: a plain deadzone that dropped sub-threshold deltas
+        outright would swallow deliberate slow motion along with tremor.
+        """
+        rx = self._move_residual_x + dxp
+        ry = self._move_residual_y + dyp
+        if math.hypot(rx, ry) < config.MOVE_DEADZONE_PX:
+            self._move_residual_x, self._move_residual_y = rx, ry
+            return []
+        self._move_residual_x, self._move_residual_y = 0.0, 0.0
+        self._virtual = Point2(self._virtual.x + rx, self._virtual.y + ry)
+        return [Move(rx, ry)]
 
     @staticmethod
     def _update_pinch(f: Features, closed: bool) -> tuple[bool, bool, bool]:
@@ -195,13 +234,14 @@ class StateMachine:
                 # A curl-forced release enters FROZEN directly (the curl
                 # that caused it is already in effect); an ordinary pinch
                 # release returns to plain TRACKING.
-                self._state = State.FROZEN if self._curled else State.TRACKING
+                if self._curled:
+                    self._state = State.FROZEN
+                    self._reset_move_residual()
+                else:
+                    self._state = State.TRACKING
                 return intents
             dxp, dyp = apply_gain(dxn, dyn, dt)
-            if dxp or dyp:
-                self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)
-                intents.append(Move(dxp, dyp))
-            return intents
+            return intents + self._accumulate_move(dxp, dyp)
 
         # From here, self._state is TRACKING or FROZEN.
         if pressed:
@@ -224,12 +264,11 @@ class StateMachine:
         # TRACKING
         if self._curled:
             self._state = State.FROZEN
+            self._reset_move_residual()
             return intents
 
         dxp, dyp = apply_gain(dxn, dyn, dt)
-        if dxp or dyp:
-            self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)
-            intents.append(Move(dxp, dyp))
+        intents += self._accumulate_move(dxp, dyp)
 
         if _is_scroll_posture(f):
             if self._scroll_since is None:

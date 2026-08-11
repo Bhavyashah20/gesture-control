@@ -30,6 +30,23 @@ drag from that down/move/up sequence on its own, exactly as it would for a
 physical mouse, so there is no separate "hold still to drag" gesture to learn
 or mistune.
 
+**Stability (2026-08-11).** Three changes address "cursor too unstable for
+small targets" and "scroll does nothing," all measured against real
+recordings rather than guessed:
+
+- The cursor reference point (`cursor_ref`) is now the centroid of your four
+  MCP knuckles (index, middle, ring, pinky) instead of the index knuckle
+  alone. Averaging four points cancels each one's independent tracking
+  noise — measured 16-21% steadier on three of the user's four recordings.
+- Small, jittery hand motion no longer moves the cursor at all: sub-pixel
+  deltas accumulate instead of being applied or dropped, so tremor in
+  alternating directions cancels out while slow, deliberate motion (aiming
+  at a small target) still arrives, just in coarser steps. This is what
+  makes small targets like window close buttons hittable.
+- Scroll gain was raised roughly 5.5x — the posture detection and dwell
+  timing were already correct, but the pixel output per gesture was about
+  ten times too small to notice.
+
 Curling and pinching are mutually exclusive, on purpose: curling your index
 finger toward your palm brings the fingertip onto the thumb, which reads as
 a pinch geometrically — there is no way to tell the two apart from the
@@ -169,6 +186,21 @@ set by pinching, not pointing: `index_curl_ratio` runs 1.03-1.39 while
 genuinely pinching (see `PINCH_CLOSE`/`PINCH2_CLOSE` above), and a pinch
 misread as a curl would freeze the cursor mid-drag, so `INDEX_CURL_OPEN =
 1.20` stays below the pointing cluster while never touching the pinch floor.
+
+`MOVE_DEADZONE_PX` (2026-08-11) governs the jitter deadzone: sub-threshold
+per-frame `Move` deltas accumulate in a residual instead of being emitted or
+dropped, so random tremor (which cancels within the residual) is filtered
+out while slow deliberate movement (which keeps accumulating in one
+direction) still gets through — just in coarser steps. Raising it trades
+more tremor rejection for coarser slow-movement steps; lowering it does the
+opposite. It applies identically whether you're just moving the cursor or
+dragging.
+
+`SCROLL_GAIN` (raised 900 → 5000 on 2026-08-11) governs scroll speed. If
+scroll ever feels too strong or too weak again, replay
+`recordings/scroll_attempt.jsonl` and check the total pixel output before
+retuning — the previous "scroll does nothing" report turned out to be pure
+magnitude, not a posture or timing bug, so check magnitude first.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v

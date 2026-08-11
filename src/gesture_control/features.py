@@ -11,7 +11,11 @@ INDEX_MCP = 5
 INDEX_TIP = 8
 MIDDLE_MCP = 9
 MIDDLE_TIP = 12
+RING_MCP = 13
 PINKY_MCP = 17
+
+# cursor_ref's four knuckles (see its assignment in extract() below).
+CURSOR_REF_LANDMARKS = (INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
 
 FINGER_JOINTS = ((6, 8), (10, 12), (14, 16), (18, 20))
 
@@ -96,7 +100,16 @@ def extract(frame: HandFrame) -> Features:
         fingers_up=fingers,
         palm_facing=_palm_facing(pts, frame.handedness),
         hand_scale=scale,
-        cursor_ref=Point2(pts[INDEX_MCP].x, pts[INDEX_MCP].y),
+        # Palm centroid, not a single knuckle (see the "cursor_ref" section
+        # of the spec for the full rationale and measured jitter numbers):
+        # the mean of the four MCP knuckles (index, middle, ring, pinky)
+        # keeps the "barely moves during a pinch" property a single knuckle
+        # has, while also cancelling each knuckle's independent tracking
+        # noise, which a single point cannot.
+        cursor_ref=Point2(
+            sum(pts[i].x for i in CURSOR_REF_LANDMARKS) / len(CURSOR_REF_LANDMARKS),
+            sum(pts[i].y for i in CURSOR_REF_LANDMARKS) / len(CURSOR_REF_LANDMARKS),
+        ),
         t=frame.t,
         present=True,
     )

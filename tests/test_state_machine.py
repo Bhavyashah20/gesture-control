@@ -1,4 +1,7 @@
+import math
+
 from gesture_control import config
+from gesture_control.filters import apply_gain
 from gesture_control.state_machine import State, StateMachine
 from gesture_control.types import ButtonDown, ButtonUp, Click, Features, Move, Point2, Scroll, Space
 
@@ -528,3 +531,234 @@ def test_sweep_while_pressed_does_not_emit_space():
     for i in range(9):
         out += sm.update(feat(t + 0.02 * i, pinch=0.2, ref=(0.2 + 0.075 * i, 0.5)))
     assert not any(isinstance(i, Space) for i in out)
+
+
+# --- MOVE_DEADZONE_PX: jitter accumulator ---
+#
+# A plain deadzone that discards sub-threshold motion outright would also
+# swallow slow, deliberate movement -- precision movement IS slow movement.
+# Instead, sub-threshold per-frame pixel deltas accumulate in a residual;
+# Move is emitted (for the full accumulated amount) only once the residual
+# crosses MOVE_DEADZONE_PX, and the residual resets to zero on emission.
+#
+# `_DT`/`_DX` below drive a tiny, constant per-frame ref delta -- deliberately
+# not derived from config (they describe a synthetic test scenario, not a
+# governing threshold), tuned so a single frame's gained delta sits well
+# under MOVE_DEADZONE_PX (verified below) and several frames are needed to
+# cross it.
+_DT, _DX = 0.05, 0.0002
+
+
+def _step_px():
+    """The gained pixel delta a single `_DT`/`_DX` step produces, computed
+    directly from `apply_gain` so the tests never hardcode a pixel figure
+    that would silently go stale if BASE_GAIN_PX or the accel curve changes."""
+    px, _ = apply_gain(_DX, 0.0, _DT)
+    return px
+
+
+def test_a_single_subthreshold_step_is_smaller_than_the_deadzone():
+    """Sanity check on the test fixtures above, not the implementation:
+    if this fails, `_DT`/`_DX` no longer describe a sub-threshold step and
+    every test below is meaningless."""
+    assert _step_px() < config.MOVE_DEADZONE_PX
+
+
+def _run_with_deadzone(deadzone, drive):
+    """Run `drive(sm, arm_fn)` with MOVE_DEADZONE_PX temporarily overridden.
+
+    `config.MOVE_DEADZONE_PX` is read fresh by state_machine.py on every
+    frame (same pattern as every other config constant in this codebase), so
+    monkeypatching it here changes real behaviour, not a mock.
+    """
+    old = config.MOVE_DEADZONE_PX
+    config.MOVE_DEADZONE_PX = deadzone
+    try:
+        sm = StateMachine()
+        return drive(sm)
+    finally:
+        config.MOVE_DEADZONE_PX = old
+
+
+def test_consistent_subthreshold_movement_eventually_emits_move_equal_to_total():
+    """Sub-threshold motion in a consistent direction must not be dropped:
+    it accumulates until the residual crosses MOVE_DEADZONE_PX, then emits
+    once for the full accumulated amount -- not the single-frame delta.
+
+    Ground truth comes from a second run with MOVE_DEADZONE_PX forced to
+    0.0, which emits a Move for every individual frame's gained delta (no
+    accumulation possible with a zero threshold); summing those pins the
+    exact total the accumulator is supposed to reproduce in one shot,
+    without hardcoding a pixel figure that depends on filter internals.
+    """
+
+    def drive(sm):
+        t = arm(sm)
+        moves = []
+        x = 0.5
+        for i in range(1, 61):
+            x += _DX
+            out = sm.update(feat(t + _DT * i, ref=(x, 0.5)))
+            moves += [m for m in out if isinstance(m, Move)]
+            if len(moves) >= 1 and deadzone_is_real:
+                break
+        return moves
+
+    # First pass: MOVE_DEADZONE_PX == 0.0, every frame fires -- sum of all
+    # of them is the ground-truth total for however many frames it takes
+    # the real run below to cross the deadzone.
+    deadzone_is_real = False
+    baseline_all = _run_with_deadzone(0.0, drive)
+    assert len(baseline_all) == 61 - 1  # every one of the 60 frames fired
+
+    deadzone_is_real = True
+    real_moves = _run_with_deadzone(config.MOVE_DEADZONE_PX, drive)
+    assert len(real_moves) == 1
+
+    n = None
+    # Figure out how many baseline frames the real run's single Move covers
+    # by matching a running sum against the emitted total.
+    running = 0.0
+    for i, m in enumerate(baseline_all, start=1):
+        running += m.dx
+        if math.isclose(running, real_moves[0].dx, rel_tol=1e-6):
+            n = i
+            break
+    assert n is not None, "accumulated Move did not match any prefix sum of the per-frame ground truth"
+    assert n > 1  # proves it took more than one frame to accumulate
+    assert math.isclose(real_moves[0].dy, sum(m.dy for m in baseline_all[:n]), rel_tol=1e-6)
+
+
+def test_alternating_subthreshold_movement_emits_nothing():
+    """Tremor is random in direction. Because the residual sums signed
+    deltas, alternating sub-threshold motion cancels within it and never
+    crosses MOVE_DEADZONE_PX -- the cursor sits genuinely still. A plain
+    (non-accumulating) deadzone would also pass this particular test, but
+    the consistent-direction test above is what proves accumulation, not
+    this one; this one just pins the cancellation property the brief calls
+    out explicitly."""
+
+    def drive(sm):
+        t = arm(sm)
+        moves = []
+        x = 0.5
+        for i in range(1, 61):
+            x = 0.5 + (_DX if i % 2 else -_DX)
+            out = sm.update(feat(t + _DT * i, ref=(x, 0.5)))
+            moves += [m for m in out if isinstance(m, Move)]
+        return moves
+
+    assert _run_with_deadzone(config.MOVE_DEADZONE_PX, drive) == []
+
+
+def test_pressed_path_also_accumulates_subthreshold_movement():
+    """The accumulator must apply during a drag too (PRESSED), not only
+    plain TRACKING -- otherwise a drag would still jitter at the pixel
+    level even though ordinary cursor movement doesn't."""
+
+    def make_drive(deadzone_is_real):
+        def drive(sm):
+            t = arm(sm)
+            sm.update(feat(t, pinch=0.2))
+            assert sm.state is State.PRESSED
+            moves = []
+            x = 0.5
+            for i in range(1, 61):
+                x += _DX
+                out = sm.update(feat(t + _DT * i, pinch=0.2, ref=(x, 0.5)))
+                moves += [m for m in out if isinstance(m, Move)]
+                if moves and deadzone_is_real:
+                    break
+            return moves, sm.state
+
+        return drive
+
+    baseline_moves, _ = _run_with_deadzone(0.0, make_drive(False))
+    real_moves, real_state = _run_with_deadzone(config.MOVE_DEADZONE_PX, make_drive(True))
+
+    assert len(real_moves) == 1
+    assert real_state is State.PRESSED
+
+    running = 0.0
+    n = None
+    for i, m in enumerate(baseline_moves, start=1):
+        running += m.dx
+        if math.isclose(running, real_moves[0].dx, rel_tol=1e-6):
+            n = i
+            break
+    assert n is not None
+    assert n > 1
+
+
+def test_move_residual_resets_on_disarm():
+    """A stale residual must not silently fire an oversized jump the moment
+    the system re-arms.
+
+    Differential test: run the identical frame sequence (accumulate a
+    sub-threshold residual, disarm, re-arm, then one large post-rearm move)
+    twice -- once with the real deadzone, once with it forced to 0.0 (so
+    there is nothing to leak by construction). The filter and gate see
+    exactly the same calls either way, so the two runs' final Move must be
+    numerically identical if -- and only if -- the pre-disarm residual was
+    actually cleared rather than carried across the re-arm.
+    """
+
+    def make_drive(deadzone_is_real):
+        def drive(sm):
+            t = arm(sm)
+            x = 0.5
+            for i in range(1, 4):
+                x += _DX
+                out = sm.update(feat(t + _DT * i, ref=(x, 0.5)))
+                if deadzone_is_real:
+                    assert out == []  # confirm residual is real but sub-threshold
+            last_t = t + _DT * 3
+            sm.update(feat(last_t + 0.1, present=False))
+            sm.update(feat(last_t + 0.1 + config.DISARM_S + 0.05, present=False))
+            assert sm.state is State.DISARMED
+            t2 = arm(sm, t0=last_t + 0.1 + config.DISARM_S + 0.2)
+            out = sm.update(feat(t2, ref=(0.9, 0.9)))
+            return [m for m in out if isinstance(m, Move)]
+
+        return drive
+
+    baseline_moves = _run_with_deadzone(0.0, make_drive(False))
+    real_moves = _run_with_deadzone(config.MOVE_DEADZONE_PX, make_drive(True))
+
+    assert len(baseline_moves) == 1
+    assert len(real_moves) == 1
+    assert math.isclose(real_moves[0].dx, baseline_moves[0].dx, rel_tol=1e-6)
+    assert math.isclose(real_moves[0].dy, baseline_moves[0].dy, rel_tol=1e-6)
+
+
+def test_move_residual_resets_on_entering_frozen():
+    """Same guarantee as disarm, for the clutch: repositioning the hand
+    while frozen must not let a pre-freeze residual fire a jump the instant
+    tracking resumes. Same differential technique as the disarm test above."""
+
+    def make_drive(deadzone_is_real):
+        def drive(sm):
+            t = arm(sm)
+            x = 0.5
+            for i in range(1, 4):
+                x += _DX
+                out = sm.update(feat(t + _DT * i, ref=(x, 0.5)))
+                if deadzone_is_real:
+                    assert out == []  # confirm residual is real but sub-threshold
+            last_t = t + _DT * 3
+            sm.update(feat(last_t + 0.05, curl=CURLED, ref=(x, 0.5)))
+            assert sm.state is State.FROZEN
+            sm.update(feat(last_t + 0.10, curl=UNCURLED, ref=(x, 0.5)))
+            assert sm.state is State.TRACKING
+            out = sm.update(feat(last_t + 0.15, ref=(0.9, 0.9)))
+            return [m for m in out if isinstance(m, Move)]
+
+        return drive
+
+    baseline_moves = _run_with_deadzone(0.0, make_drive(False))
+    real_moves = _run_with_deadzone(config.MOVE_DEADZONE_PX, make_drive(True))
+
+    assert len(baseline_moves) == 1
+    assert len(real_moves) == 1
+    assert math.isclose(real_moves[0].dx, baseline_moves[0].dx, rel_tol=1e-6)
+    assert math.isclose(real_moves[0].dy, baseline_moves[0].dy, rel_tol=1e-6)

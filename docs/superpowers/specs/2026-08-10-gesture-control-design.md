@@ -1,7 +1,29 @@
 # Gesture Control — Design
 
 Date: 2026-08-10
-Status: Approved and implemented; amended 2026-08-11 (direct-manipulation redesign)
+Status: Approved and implemented; amended 2026-08-11 (direct-manipulation
+redesign; stability fixes)
+
+## Amendment (2026-08-11): stability fixes — scroll magnitude, jitter, cursor reference
+
+Three changes, each backed by measurement against the user's own recordings,
+addressing two reports: "cursor is too unstable to hit small targets like
+window close buttons" and "scroll does nothing."
+
+1. **`SCROLL_GAIN` raised 900 → 5000.** `recordings/scroll_attempt.jsonl`
+   proved scroll's posture detection and dwell logic were already correct;
+   the gain alone was ~10x too weak. See "Scroll" below.
+2. **Jitter deadzone with accumulation, `MOVE_DEADZONE_PX = 2.0`.** Sub-
+   threshold per-frame `Move` deltas accumulate in a residual instead of
+   being emitted or dropped outright, so random tremor cancels (cursor sits
+   still) while consistent slow movement still arrives (precision movement
+   is slow movement, and a plain deadzone would have blocked it too). See
+   "The jitter deadzone" under "State machine" below.
+3. **`cursor_ref` changed from the index MCP knuckle to the palm centroid**
+   (mean of the index, middle, ring, and pinky MCP knuckles). Measured 16-21%
+   steadier on three of the user's four recordings, 3% worse on the fourth
+   (`clutch.jsonl`, dominated by extreme finger articulation that moves the
+   knuckles themselves). Net win, applied. See "Feature extraction" below.
 
 ## Amendment (2026-08-11): direct manipulation replaces trackpad mimicry
 
@@ -171,7 +193,7 @@ class Features:
     fingers_up: tuple[bool, ...] # index, middle, ring, pinky
     palm_facing: bool            # palm oriented toward camera
     hand_scale: float            # wrist → middle MCP, in frame widths
-    cursor_ref: Point2           # index MCP, mirrored x
+    cursor_ref: Point2           # palm centroid (mean of 4 MCP knuckles), mirrored x
     t: float
 
 Intent = Move(dx, dy) | Click(n) | ButtonDown | ButtonUp | Scroll(dy) | Space(dir)
@@ -180,7 +202,7 @@ Intent = Move(dx, dy) | Click(n) | ButtonDown | ButtonUp | Scroll(dy) | Space(di
 ## Feature extraction
 
 MediaPipe landmark indices used: 0 wrist, 4 thumb tip, 5 index MCP, 8 index tip,
-9 middle MCP, 12 middle tip, 17 pinky MCP.
+9 middle MCP, 12 middle tip, 13 ring MCP, 17 pinky MCP.
 
 **Mirroring.** The webcam image is mirrored relative to the user, so all x
 coordinates are transformed `x → 1 - x` at feature-extraction time. Everything
@@ -214,13 +236,42 @@ coordinates keeps this correct when the hand is rotated.
 (landmark[5] − landmark[0]) × (landmark[17] − landmark[0]). Toward the camera is
 palm-facing.
 
-**`cursor_ref`** = landmark[5], the index MCP knuckle.
+**`cursor_ref`** = mean of landmarks [5, 9, 13, 17] — the index, middle, ring, and
+pinky MCP knuckles — the palm centroid. Changed from a single knuckle
+(landmark[5], the index MCP) on 2026-08-11.
 
-> This choice is load-bearing. The knuckle at the base of the index finger barely
-> moves when the thumb and index close, whereas a fingertip translates several
-> millimetres. Tracking a fingertip makes the cursor jump at the exact instant of a
-> pinch — the most common failure mode in webcam pointers, and the one that makes
-> small targets unhittable.
+> This choice is load-bearing. None of the four MCP knuckles moves much when the
+> thumb and index close, whereas a fingertip translates several millimetres.
+> Tracking a fingertip makes the cursor jump at the exact instant of a pinch — the
+> most common failure mode in webcam pointers, and the one that makes small targets
+> unhittable. A single knuckle already has this property; the centroid of four
+> knuckles keeps it and improves on it, because each knuckle's tracking noise is
+> largely independent of the others', so averaging four cancels noise that
+> averaging one cannot.
+>
+> Measured directly against the user's own recordings (median frame-to-frame
+> displacement of the reference point, normalized units × 1000 — a robust jitter
+> metric, insensitive to the occasional large deliberate movement that a mean would
+> be skewed by):
+>
+> | Recording | Index MCP alone | Palm centroid | Change |
+> |---|---|---|---|
+> | `live_clicks.jsonl` | 2.11 | 1.66 | 21% steadier |
+> | `five_clicks.jsonl` | 0.99 | 0.83 | 16% steadier |
+> | `scroll_attempt.jsonl` | 3.10 | 2.59 | 17% steadier |
+> | `clutch.jsonl` | 4.13 | 4.26 | 3% worse |
+>
+> A net win across three of the four fixtures, so the centroid replaces the single
+> knuckle everywhere `cursor_ref` is used (tracking, dragging, scrolling, swipe
+> detection). `clutch.jsonl` is the one exception, and a small one: that recording
+> is dominated by extreme index-finger articulation (deliberate curling to the
+> point of touching the thumb), which moves the knuckles themselves more than
+> ordinary pointing or clicking does — the same motion the centroid is measuring
+> jitter against is, in this one fixture, real signal, not noise. Replaying every
+> fixture through the full state machine after the change showed no behavioural
+> regression from this 3% figure (see the replay report in
+> `.superpowers/sdd/2026-08-10-gesture-control/`), so it was accepted rather than
+> reverted.
 
 ## Posture gate
 
@@ -275,18 +326,60 @@ freezes it again from there.
 
 ### Continuous emissions
 
-Beyond transitions, three states emit on every frame they are active:
+Beyond transitions, three states are active on every frame:
 
-| State | Emits each frame |
+| State | Active every frame |
 |---|---|
-| `Tracking` | `Move(dx, dy)` from the filtered `cursor_ref` delta |
-| `Pressed` | `Move(dx, dy)`, actuated as `LeftMouseDragged` |
-| `Scroll` | `Scroll(dy)` when vertical movement exceeds one pixel |
+| `Tracking` | computes a `Move(dx, dy)` candidate from the filtered `cursor_ref` delta, then runs it through the jitter deadzone below — most frames accumulate silently, and a `Move` is emitted only when the deadzone crosses |
+| `Pressed` | same candidate-then-deadzone pipeline, actuated as `LeftMouseDragged` when it does emit |
+| `Scroll` | emits `Scroll(dy)` every frame vertical movement exceeds one pixel — not deadzoned, see "The jitter deadzone" below for why |
 
 `Frozen` and `Disarmed` emit nothing. This is the whole mechanism: the cursor
 does not move in `Frozen` — that is what makes the clutch a clutch — and
-`Tracking` is the only state where a bare hand movement (no pinch) produces a
-`Move`.
+`Tracking` and `Pressed` are the only states where hand movement can produce
+a `Move`.
+
+#### The jitter deadzone (2026-08-11)
+
+The user reported the cursor was too unstable to hit small targets like
+window close buttons. A plain deadzone — drop any per-frame delta smaller
+than a threshold — would fix tremor but also break precision: aiming at a
+small target means moving slowly, and slow, deliberate movement produces
+small per-frame deltas too. A threshold that can't tell them apart either
+lets tremor through (too low) or blocks deliberate aiming (too high). No
+single threshold value resolves that trade-off, because the two cases are
+identical at the single-frame level — the only thing that distinguishes them
+is *direction over time*, which a per-frame check can't see.
+
+The fix accumulates instead of discarding. Each frame's gained pixel delta
+(`dxp, dyp`, the output of `apply_gain`) is added to a running residual. If
+the residual's magnitude is below `MOVE_DEADZONE_PX`, no `Move` is emitted
+and the residual carries into the next frame. Once it crosses the threshold,
+a single `Move` is emitted for the *entire* accumulated residual, which then
+resets to zero. Random tremor is random in direction, so its contributions
+to the residual largely cancel and it rarely crosses the threshold — the
+cursor sits still. Consistent slow movement is directional, so its
+contributions add up and it always eventually crosses — the cursor still
+gets there, just in coarser steps (one `Move` every few frames instead of
+every frame) rather than being silently dropped.
+
+The residual lives on the state machine, not the filter — it is per-frame
+cursor state, the same category as `_virtual` and the tracking reference
+point, not a property of the One Euro filter. It is shared between
+`Tracking` and `Pressed` so a drag is exactly as steady as plain cursor
+movement, and it is reset in two places: when the gate disarms, and on every
+transition into `Frozen`. Both resets exist for the same reason — a residual
+accumulated before one of these events must never combine with fresh motion
+after it to fire an oversized jump the instant tracking resumes. Without the
+disarm reset, walking away and coming back could replay stale sub-pixel
+drift as a jump; without the `Frozen` reset, repositioning the hand during a
+clutch and then uncurling could do the same.
+
+`Scroll` does not go through this deadzone. It already has its own
+independent threshold (`SCROLL_MIN_PX`, a plain per-event minimum, not an
+accumulator) and scroll wheel input has no equivalent small-target precision
+requirement — there is no "close button" to overshoot by a pixel when
+scrolling.
 
 ### The button: press and release, nothing else
 
@@ -464,9 +557,34 @@ confusing possible failure for the user.
 ### Scroll
 
 While in `Scroll`, vertical movement of `cursor_ref` maps to pixel-unit scroll
-events: `scroll_px = dy_normalized × SCROLL_GAIN`, with `SCROLL_GAIN = 900`. Natural
-scrolling direction is matched to the system setting by reading
-`com.apple.swipescrolldirection`; if unavailable, defaults to natural.
+events: `scroll_px = dy_normalized × SCROLL_GAIN`, with `SCROLL_GAIN = 5000`
+(raised from 900 on 2026-08-11 — see below). Natural scrolling direction is
+matched to the system setting by reading `com.apple.swipescrolldirection`; if
+unavailable, defaults to natural.
+
+**`SCROLL_GAIN` raised 900 → 5000 (2026-08-11): scroll was ~10x too weak.**
+The user reported "scroll does nothing." `recordings/scroll_attempt.jsonl` (a
+new, dedicated 15 s deliberate-scrolling recording) proved this was a
+magnitude bug, not a posture or state-machine bug: 260 of 444 present frames
+match the scroll posture and the machine emitted 53 `Scroll` intents at the
+old gain — the posture detection and dwell logic were working. The problem
+was that those 53 intents added up to only 220 px of total scroll (median
+event 2.4 px) over the whole 15 s gesture — roughly two lines, imperceptible
+as "scrolling happened" at all.
+
+Measured total vertical hand travel while the scroll posture holds (filtered
+`cursor_ref`, summed frame-to-frame over every posture-matching frame,
+independent of the entry dwell) is 0.429 frame-heights. Naively multiplying
+that raw travel by the gain projects 386 px at `GAIN=900` and ~2145 px at
+`GAIN=5000` — but that projection is optimistic: the real pipeline only
+scrolls once `SCROLL_DWELL_S` has elapsed and drops any single event under
+`SCROLL_MIN_PX`, so actual replayed output runs below the naive number at
+both gains (220 px actual vs. 386 px projected at the old gain). Replayed for
+real at `GAIN=5000`, through the full pipeline including the palm-centroid
+`cursor_ref` and jitter-deadzone changes below: 118 `Scroll` intents totaling
+1362 px (median 3.9 px) — about 6.2x more scroll for the same gesture.
+`recordings/scroll_attempt.jsonl` is now a committed fixture and the
+regression test for scroll magnitude specifically (see "Testing" below).
 
 ### Space switching
 
@@ -511,6 +629,15 @@ px     = delta × 1600 × accel                # 1600 px per frame width, base
 Low gain at low speed buys precision on small targets; high gain at high speed
 avoids repeated re-clutching to cross the display. The cursor is clamped to the
 primary display bounds.
+
+**Jitter deadzone (2026-08-11), after gain.** The gained pixel delta above is
+not emitted as a `Move` directly — it first passes through the accumulating
+deadzone described in "The jitter deadzone" (under "State machine" above):
+sub-`MOVE_DEADZONE_PX` deltas accumulate in a residual instead of being
+emitted or dropped, so tremor cancels out while slow deliberate movement
+still arrives, just in coarser steps. This lives in `state_machine.py`, not
+here, because it is per-frame cursor state (the residual), not a property of
+the filter or the gain curve.
 
 ## Actuator
 
@@ -578,6 +705,9 @@ runtime.
   is likewise scale-invariant and independent of the index pinch; `index_curl_ratio`
   is likewise scale-invariant and independent of the pinch; finger
   extension is correct for known hand poses; mirroring is applied exactly once
+  (now: to each of the four MCP knuckles before they are averaged, not to a
+  single landmark); `cursor_ref` is the mean of landmarks 5/9/13/17 and barely
+  moves when the pinch closes, same as the single knuckle it replaced
 - `gate`: arms only after the full dwell; does not disarm when fingers curl to
   pinch (the asymmetry above); rejects out-of-range `hand_scale`
 - `state_machine`: each row of the transition table, including the
@@ -585,13 +715,17 @@ runtime.
   resume; curl and pinch are mutually exclusive -- curl is evaluated before
   pinch every frame, the pinch channels are ignored while curled, and an
   already-open button is released, not held, the instant a curl engages),
-  and the stuck-button watchdog
+  the stuck-button watchdog, and the jitter deadzone accumulator (consistent
+  sub-threshold motion accumulates and eventually emits its full total;
+  alternating sub-threshold motion cancels and emits nothing; the residual
+  applies identically during a drag; it resets on disarm and on entering
+  `Frozen`)
 - `filters`: One Euro converges on constant input; gain curve is monotonic and
   respects its clamps
 
 **Replay tests.** `recorder.py` writes real sessions as `.jsonl` (landmarks +
 timestamps). Replaying a recording through the state machine must yield an exact
-intent sequence. The six behavioural fixtures below were all recorded under the
+intent sequence. The core behavioural fixtures below were all recorded under the
 OLD trackpad-mimicry model; replaying them against the new state machine changes
 what they demonstrate but not their purpose:
 
@@ -632,6 +766,13 @@ cursor movement, not just an occasional stray click. If either fixture
 starts emitting anything, the fix is to tune the gate — not to weaken the
 assertion.
 
+`recordings/scroll_attempt.jsonl` (added 2026-08-11, a dedicated 15 s
+deliberate-scrolling recording) is the regression fixture for `SCROLL_GAIN`
+specifically — see "Scroll" above for the diagnosis. Its replay test asserts
+a meaningful total scroll distance (a lower bound, not an exact pixel count,
+so it survives future retuning) rather than pinning the exact figure, which
+would just re-encode `SCROLL_GAIN` as a second magic number.
+
 **Manual smoke checklist** for `actuator` and `hud`, the two modules that must
 touch the real OS. Run with `--dry-run` first, then live.
 
@@ -671,12 +812,13 @@ scroll, swipe, filter) are unchanged by this redesign.
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `BASE_GAIN_PX` | 2000 | cursor travel per hand movement; raised from 1600 to increase reach from 560 px to 1000 px per hand-sweep, enabling edge access on 1470 px display with index-curl clutch covering the rest; cost: hand tremor amplified |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.5 / 2.5 | precision floor vs. reach ceiling; ACCEL_MIN raised from 0.35 to 0.5 to increase slow-movement reach from 560 px to 1000 px per hand-sweep |
-| `SCROLL_GAIN` | 900 | scroll speed |
-| `SCROLL_MIN_PX` | 1.0 | deadband below which no scroll is emitted |
+| `SCROLL_GAIN` | 5000 | scroll speed; raised from 900 (2026-08-11) — see "Scroll" above. The old gain produced 220 px of total scroll for a deliberate 15 s gesture (`recordings/scroll_attempt.jsonl`); the new gain produces 1362 px for the same gesture |
+| `SCROLL_MIN_PX` | 1.0 | deadband below which no single scroll event is emitted |
+| `MOVE_DEADZONE_PX` | 2.0 | jitter deadzone for `Move` (added 2026-08-11) — see "The jitter deadzone" above. Sub-threshold pixel deltas accumulate in a residual instead of being emitted or dropped, so tremor cancels but slow deliberate movement still arrives |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |
 | `SWIPE_COOLDOWN_MS` | 800 | prevents multi-Space skips |
 | `DRY_RUN_FLUSH_S` | 1000 | max age of a coalesced `move` run in `--dry-run` output before it flushes |
-| `EURO_MIN_CUTOFF` / `EURO_BETA` | 1.0 / 0.7 | jitter vs. lag |
+| `EURO_MIN_CUTOFF` / `EURO_BETA` | 0.4 / 0.7 | jitter vs. lag |
 
 ## Repository layout
 
