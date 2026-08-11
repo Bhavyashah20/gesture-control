@@ -2752,7 +2752,12 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 ```
 
-Note that `hud` is referenced inside the signal handlers before its assignment. That is fine — the handlers only run after `hud.run()` has started, by which point the name is bound.
+The signal handlers must be registered AFTER `hud` is constructed. An earlier
+version of this plan registered them first and claimed that was safe because the
+handlers "only run after `hud.run()` has started". That claim is wrong: handlers
+are live the moment `signal.signal()` returns, so a Ctrl-C arriving during the
+`Hud(...)` constructor would evaluate `hud.stop()` with the name still unbound and
+raise `NameError` inside the handler. Construct the hud first, then register.
 
 - [ ] **Step 4: Add the console entry point to `pyproject.toml`**
 
