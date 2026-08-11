@@ -55,10 +55,27 @@ def test_five_clicks_yields_exactly_five_single_clicks():
     assert clicks == [Click(1)] * 5
 
 
-def test_double_click_yields_one_click_two():
+def test_rapid_index_taps_never_produce_a_double():
+    """`one_double_click.jsonl` was recorded under the OLD timing-based
+    double-click design. Under the new gesture (middle-tip-to-thumb, no
+    timing) two rapid index taps are just two single clicks -- this is the
+    regression test for exactly the misfire that motivated the change.
+    """
     clicks = [i for i in _replay("one_double_click") if isinstance(i, Click)]
-    assert Click(2) in clicks
-    assert len(clicks) == 2
+    assert clicks
+    assert all(c == Click(1) for c in clicks)
+    assert Click(2) not in clicks
+
+
+def test_live_clicks_never_produce_a_double():
+    """`live_clicks.jsonl` contained three false doubles under the old
+    timing-based design. Under the new gesture, none of its taps are on the
+    middle finger, so every click must come back as Click(1).
+    """
+    clicks = [i for i in _replay("live_clicks") if isinstance(i, Click)]
+    assert clicks
+    assert all(c == Click(1) for c in clicks)
+    assert Click(2) not in clicks
 
 
 def test_drag_yields_one_start_and_one_end():

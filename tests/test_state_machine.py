@@ -3,10 +3,10 @@ from gesture_control.state_machine import State, StateMachine
 from gesture_control.types import Features, Move, Point2
 
 
-def feat(t, pinch=0.9, fingers=(True, True, True, True), palm=True,
+def feat(t, pinch=0.9, pinch2=0.9, fingers=(True, True, True, True), palm=True,
          ref=(0.5, 0.5), scale=0.20, present=True):
     return Features(
-        pinch_ratio=pinch, fingers_up=fingers, palm_facing=palm,
+        pinch_ratio=pinch, pinch2_ratio=pinch2, fingers_up=fingers, palm_facing=palm,
         hand_scale=scale, cursor_ref=Point2(*ref), t=t, present=present,
     )
 
@@ -125,31 +125,41 @@ def test_release_after_moving_far_is_not_a_click():
     assert not any(isinstance(i, Click) for i in out)
 
 
-def test_two_quick_taps_emit_click_two():
+def test_middle_pinch_tap_emits_click_two():
+    """Double-click is its own gesture now: middle-tip-to-thumb, no timing."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch2=0.2))
+    out = sm.update(feat(t + 0.10, pinch2=0.9))
+    assert out == [Click(2)]
+
+
+def test_index_pinch_tap_still_emits_click_one():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    assert sm.update(feat(t + 0.08, pinch=0.9)) == [Click(1)]
-    sm.update(feat(t + 0.20, pinch=0.2))
-    assert sm.update(feat(t + 0.28, pinch=0.9)) == [Click(2)]
+    out = sm.update(feat(t + 0.10, pinch=0.9))
+    assert out == [Click(1)]
 
 
-def test_slow_second_tap_is_a_fresh_single_click():
+def test_both_pinches_closed_prioritizes_click_one():
+    """A false single click is less damaging than a false double."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2))
-    assert sm.update(feat(t + 0.08, pinch=0.9)) == [Click(1)]
-    sm.update(feat(t + 1.00, pinch=0.2))
-    assert sm.update(feat(t + 1.08, pinch=0.9)) == [Click(1)]
+    sm.update(feat(t, pinch=0.2, pinch2=0.2))
+    out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
+    assert out == [Click(1)]
 
 
-def test_triple_tap_does_not_emit_click_three():
+def test_rapid_index_taps_never_emit_click_two():
     sm = StateMachine()
     t = arm(sm)
+    clicks: list[Click] = []
     for i in range(3):
         sm.update(feat(t + i * 0.20, pinch=0.2))
         out = sm.update(feat(t + i * 0.20 + 0.08, pinch=0.9))
-        assert out[0].n in (1, 2)
+        clicks += [c for c in out if isinstance(c, Click)]
+    assert clicks == [Click(1)] * 3
 
 
 def test_holding_pinch_still_starts_a_drag():

@@ -18,8 +18,9 @@ def test_hand_frame_absent_has_no_points():
 
 def test_features_carry_four_fingers():
     f = Features(
-        pinch_ratio=0.5, fingers_up=(True, True, False, False), palm_facing=True,
-        hand_scale=0.2, cursor_ref=Point2(0.5, 0.5), t=1.0, present=True,
+        pinch_ratio=0.5, pinch2_ratio=0.5, fingers_up=(True, True, False, False),
+        palm_facing=True, hand_scale=0.2, cursor_ref=Point2(0.5, 0.5), t=1.0,
+        present=True,
     )
     assert len(f.fingers_up) == 4
 
@@ -35,6 +36,10 @@ def test_intents_are_comparable_by_value():
 
 def test_pinch_thresholds_have_hysteresis_gap():
     assert config.PINCH_CLOSE < config.PINCH_OPEN
+
+
+def test_pinch2_thresholds_have_hysteresis_gap():
+    assert config.PINCH2_CLOSE < config.PINCH2_OPEN
 
 
 def test_gate_dwells_are_asymmetric():

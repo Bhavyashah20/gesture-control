@@ -26,6 +26,7 @@ class HandFrame:
 @dataclass(frozen=True)
 class Features:
     pinch_ratio: float
+    pinch2_ratio: float
     fingers_up: tuple[bool, bool, bool, bool]
     palm_facing: bool
     hand_scale: float

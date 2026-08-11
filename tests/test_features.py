@@ -5,7 +5,7 @@ from gesture_control.features import extract
 from gesture_control.types import HandFrame, Point3
 
 
-def make_hand(scale=1.0, pinch=0.30, fingers=(True, True, True, True),
+def make_hand(scale=1.0, pinch=0.30, pinch2=None, fingers=(True, True, True, True),
               left=False, offset=(0.0, 0.0), t=0.0):
     """Build a synthetic right hand, palm to camera, fingers up.
 
@@ -18,16 +18,25 @@ def make_hand(scale=1.0, pinch=0.30, fingers=(True, True, True, True),
     def put(i, x, y):
         pts[i] = Point3(ox + x * scale, oy + y * scale, 0.0)
 
+    thumb_y = 0.42 - pinch * 0.20            # thumb tip y, pinch is a ratio
+
     put(0, 0.50, 0.60)                      # wrist
     put(9, 0.50, 0.40)                      # middle MCP -> hand_scale = 0.20
     put(5, 0.56, 0.42)                      # index MCP (raw: right of pinky)
     put(17, 0.44, 0.42)                     # pinky MCP
-    put(4, 0.56, 0.42 - pinch * 0.20)       # thumb tip, pinch is a ratio
+    put(4, 0.56, thumb_y)                   # thumb tip
 
     for idx, (pip, tip) in enumerate([(6, 8), (10, 12), (14, 16), (18, 20)]):
         base_x = 0.56 - idx * 0.04
         put(pip, base_x, 0.34)
         put(tip, base_x, 0.24 if fingers[idx] else 0.36)
+
+    if pinch2 is not None:
+        # Placed at a fixed offset from the (already-positioned) thumb tip,
+        # same x, so dist(thumb, middle_tip) / hand_scale == pinch2 exactly
+        # (hand_scale in raw units is 0.20) -- independent of `pinch`, which
+        # only ever moves landmark 4 relative to landmark 8.
+        put(12, 0.56, thumb_y - pinch2 * 0.20)
 
     if left:
         pts = [Point3(1.0 - p.x, p.y, p.z) for p in pts]
@@ -58,6 +67,25 @@ def test_pinch_ratio_tracks_thumb_distance():
     open_hand = extract(make_hand(pinch=0.10))
     closed = extract(make_hand(pinch=0.90))
     assert open_hand.pinch_ratio > closed.pinch_ratio
+
+
+def test_pinch2_ratio_matches_thumb_to_middle_tip_distance():
+    f = extract(make_hand(pinch2=0.42))
+    assert math.isclose(f.pinch2_ratio, 0.42, abs_tol=1e-6)
+
+
+def test_pinch2_ratio_is_invariant_to_hand_scale():
+    near = extract(make_hand(scale=1.0, pinch2=0.30))
+    far = extract(make_hand(scale=0.5, pinch2=0.30))
+    assert math.isclose(near.pinch2_ratio, far.pinch2_ratio, abs_tol=1e-6)
+
+
+def test_pinch2_ratio_is_independent_of_index_pinch():
+    """pinch2_ratio must track the middle fingertip, not the index tip."""
+    a = extract(make_hand(pinch=0.10, pinch2=0.50))
+    b = extract(make_hand(pinch=0.90, pinch2=0.50))
+    assert math.isclose(a.pinch2_ratio, b.pinch2_ratio, abs_tol=1e-6)
+    assert not math.isclose(a.pinch_ratio, b.pinch_ratio, abs_tol=1e-2)
 
 
 def test_finger_extension_detected_per_finger():

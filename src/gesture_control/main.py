@@ -6,7 +6,7 @@ import os
 import signal
 import sys
 import time
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 from . import config
 from .actuator import DryRunActuator, QuartzActuator, accessibility_granted, request_accessibility
@@ -17,6 +17,47 @@ from .landmarks import DEFAULT_MODEL_PATH, HandTracker, MODEL_URL
 from .recorder import write_session
 from .state_machine import State, StateMachine
 from .types import Features, HandFrame, Intent
+
+
+class MoveCoalescer:
+    """Collapses consecutive `move` log lines into a single `move xN` summary.
+
+    --dry-run posts a `move` roughly every camera tick (~30/s). Printed one
+    per line, a click or drag event scrolls past and off screen almost
+    instantly, which is what made a working double-click look "broken" —
+    11 of 12 taps had in fact registered. Every non-move entry still prints
+    immediately, on its own line; only runs of `move` get folded together.
+
+    Pure bookkeeping (an injected `emit` and `clock`, no I/O of its own) so
+    it's testable without a running pipeline; `main()` is what wires it to
+    `print` and `time.monotonic`.
+    """
+
+    def __init__(
+        self, emit: Callable[[str], None], clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._emit = emit
+        self._clock = clock
+        self._count = 0
+        self._since: float | None = None
+
+    def feed(self, entry: str) -> None:
+        if entry.startswith("move "):
+            now = self._clock()
+            if self._count and now - self._since >= config.DRY_RUN_FLUSH_S:
+                self.flush()
+            if self._count == 0:
+                self._since = now
+            self._count += 1
+            return
+        self.flush()
+        self._emit(entry)
+
+    def flush(self) -> None:
+        if self._count:
+            self._emit(f"move x{self._count}")
+            self._count = 0
+            self._since = None
 
 
 class TickResult(NamedTuple):
@@ -102,7 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Space switching requires the Mission Control shortcuts "
           "Ctrl-left and Ctrl-right to be enabled in System Settings, Keyboard.")
 
-    actuator = DryRunActuator(sink=print) if args.dry_run else QuartzActuator()
+    coalescer = MoveCoalescer(print)
+    actuator = DryRunActuator(sink=coalescer.feed) if args.dry_run else QuartzActuator()
     tracker = HandTracker(args.model)
     machine = StateMachine()
     camera = Camera(index=args.camera)
@@ -147,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         # Reused verbatim by both drivers below: release_all() before the
         # camera and tracker close, same as the original single-driver code.
         shutdown()
+        coalescer.flush()
         camera.close()
         tracker.close()
         if args.record is not None:

@@ -4,7 +4,7 @@ from gesture_control.types import Features, Point2
 
 def feat(t, fingers=(True, True, True, True), palm=True, scale=0.20, present=True):
     return Features(
-        pinch_ratio=0.9, fingers_up=fingers, palm_facing=palm,
+        pinch_ratio=0.9, pinch2_ratio=0.9, fingers_up=fingers, palm_facing=palm,
         hand_scale=scale, cursor_ref=Point2(0.5, 0.5), t=t, present=present,
     )
 

@@ -10,12 +10,14 @@ THUMB_TIP = 4
 INDEX_MCP = 5
 INDEX_TIP = 8
 MIDDLE_MCP = 9
+MIDDLE_TIP = 12
 PINKY_MCP = 17
 
 FINGER_JOINTS = ((6, 8), (10, 12), (14, 16), (18, 20))
 
 _ABSENT = Features(
     pinch_ratio=1.0,
+    pinch2_ratio=1.0,
     fingers_up=(False, False, False, False),
     palm_facing=False,
     hand_scale=0.0,
@@ -62,6 +64,7 @@ def extract(frame: HandFrame) -> Features:
         return Features(**{**_ABSENT.__dict__, "t": frame.t})
 
     pinch = _dist(pts[THUMB_TIP], pts[INDEX_TIP]) / scale
+    pinch2 = _dist(pts[THUMB_TIP], pts[MIDDLE_TIP]) / scale
 
     fingers = tuple(
         _dist(pts[WRIST], pts[tip]) > config.FINGER_EXT_RATIO * _dist(pts[WRIST], pts[pip])
@@ -70,6 +73,7 @@ def extract(frame: HandFrame) -> Features:
 
     return Features(
         pinch_ratio=pinch,
+        pinch2_ratio=pinch2,
         fingers_up=fingers,
         palm_facing=_palm_facing(pts, frame.handedness),
         hand_scale=scale,

@@ -3,6 +3,17 @@
 PINCH_CLOSE = 0.35
 PINCH_OPEN = 0.45
 
+# Double-click is its own gesture (middle-tip-to-thumb), not a timing window.
+# Diagnosed against real recordings 2026-08-10: the user's deliberate
+# double-click had a release-to-release gap of 0.399 s; three ACCIDENTAL
+# doubles (consecutive single clicks read as one) had gaps of 0.400, 0.300,
+# 0.201 s. Those distributions fully overlap, so no timing threshold can
+# separate them. While index-pinching, the user's middle-to-thumb ratio runs
+# 0.43-0.90 (median 0.64); across 1060 recorded frames only one dips below
+# 0.35. 0.30/0.40 sit safely under that floor with hysteresis room to spare.
+PINCH2_CLOSE = 0.30
+PINCH2_OPEN = 0.40
+
 ARM_DWELL_S = 0.300
 DISARM_S = 0.500
 HAND_SCALE_MIN = 0.08
@@ -12,12 +23,9 @@ ARM_FINGERS_MIN = 3
 
 # Calibrated against real recordings, not estimated. Observed on a live hand:
 # deliberate taps hold 0.37-0.47 s (the original 0.250 rejected every one of
-# them), tap travel reaches 16.7 px (the original 15.0 sat mid-distribution),
-# and a real double-click gap was 0.399 s (the original 0.350 just missed it).
+# them), and tap travel reaches 16.7 px (the original 15.0 sat mid-distribution).
 TAP_MAX_S = 0.550
 TAP_MAX_PX = 25.0
-DOUBLE_MAX_S = 0.450
-DOUBLE_MAX_PX = 50.0
 DRAG_DWELL_S = 0.700
 
 BASE_GAIN_PX = 1600.0
@@ -51,3 +59,9 @@ FRAME_HEIGHT = 480
 FRAME_FPS = 30
 
 HUD_TICK_MS = 1
+
+# --dry-run posts a `move` roughly every camera tick (~30/s); printed one at
+# a time, clicks and other discrete events scroll off screen instantly. This
+# is the max age of a pending run of coalesced `move` lines before it flushes
+# on its own, so a still hand doesn't leave a summary line hanging forever.
+DRY_RUN_FLUSH_S = 1.0

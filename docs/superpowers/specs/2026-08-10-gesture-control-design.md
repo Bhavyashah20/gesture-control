@@ -108,6 +108,7 @@ class HandFrame:
 @dataclass(frozen=True)
 class Features:
     pinch_ratio: float           # scale-invariant thumb-index distance
+    pinch2_ratio: float          # scale-invariant thumb-middle distance
     fingers_up: tuple[bool, ...] # index, middle, ring, pinky
     palm_facing: bool            # palm oriented toward camera
     hand_scale: float            # wrist → middle MCP, in frame widths
@@ -120,7 +121,7 @@ Intent = Move(dx, dy) | Click(n) | DragStart | DragEnd | Scroll(dy) | Space(dir)
 ## Feature extraction
 
 MediaPipe landmark indices used: 0 wrist, 4 thumb tip, 5 index MCP, 8 index tip,
-9 middle MCP, 17 pinky MCP.
+9 middle MCP, 12 middle tip, 17 pinky MCP.
 
 **Mirroring.** The webcam image is mirrored relative to the user, so all x
 coordinates are transformed `x → 1 - x` at feature-extraction time. Everything
@@ -134,6 +135,11 @@ This is the normalizer for every distance measure.
 scale makes the pinch read identically at 30 cm and 70 cm from the camera. Without
 this normalization every threshold silently breaks whenever the user shifts in
 their chair.
+
+**`pinch2_ratio`** = ‖landmark[4] − landmark[12]‖ / `hand_scale`, the same
+normalization applied to thumb-to-middle-fingertip distance. This drives the
+double-click gesture (see "Pinch disambiguation" below) — it is a second,
+independent pinch channel, not a derivative of `pinch_ratio`.
 
 **`fingers_up[f]`** = ‖tip − wrist‖ > 1.15 × ‖pip − wrist‖ for each of index,
 middle, ring, pinky. Comparing distances from the wrist rather than comparing y
@@ -178,14 +184,22 @@ All states fall back to `ArmedIdle` when their triggering posture ends, and to
 | From | To | Trigger |
 |---|---|---|
 | `Disarmed` | `ArmedIdle` | posture gate arms |
-| `ArmedIdle` | `Tracking` | `pinch_ratio` < 0.35; record anchor position and time |
+| `ArmedIdle` | `Tracking` | `pinch_ratio` < 0.35 (index); record anchor, time, and `click_n = 1` |
+| `ArmedIdle` | `Tracking` | `pinch2_ratio` < 0.30 (middle), only if the index pinch is not closed; record anchor, time, and `click_n = 2` |
 | `ArmedIdle` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
 | `ArmedIdle` | `ArmedIdle` | horizontal sweep → emit `Space` |
-| `Tracking` | `ArmedIdle` | `pinch_ratio` > 0.45 (release); may emit `Click` |
+| `Tracking` | `ArmedIdle` | the pinch that opened `Tracking` releases (index: `pinch_ratio` > 0.45; middle: `pinch2_ratio` > 0.40); may emit `Click(click_n)` |
 | `Tracking` | `Drag` | pinch held > 700 ms with total movement < 25 px; emit `DragStart` |
-| `Drag` | `ArmedIdle` | `pinch_ratio` > 0.45; emit `DragEnd` |
+| `Drag` | `ArmedIdle` | the pinch that opened `Tracking` releases; emit `DragEnd` |
 | `Scroll` | `ArmedIdle` | scroll posture lost |
 | any | `Disarmed` | posture gate disarms; releases any held button first |
+
+**Index wins.** If the index pinch is closed on a given frame, that is a
+single-click gesture regardless of what the middle finger is doing — the
+middle pinch is only ever consulted when the index pinch is open. Both
+pinches otherwise behave identically once `Tracking` starts: either can move
+the cursor while held, and either can start a `Drag` past `DRAG_DWELL_S`.
+Drag is never special-cased by which finger opened it.
 
 ### Continuous emissions
 
@@ -202,13 +216,13 @@ Beyond transitions, three states emit on every frame they are active:
 
 ### Pinch disambiguation
 
-All three pinch outcomes begin identically. The machine records position and time
-at pinch-down and decides from what follows:
+Click, cursor move, and drag all begin identically, from whichever pinch
+opened `Tracking`. The machine records position, time, and `click_n` (1 for
+index, 2 for middle) at pinch-down and decides from what follows:
 
 | Outcome | Rule |
 |---|---|
-| Click | released within 550 ms, having moved < 25 px |
-| Double-click | a Click whose predecessor ended < 450 ms ago and < 50 px away |
+| Click | released within 550 ms, having moved < 25 px; emits `Click(click_n)` |
 | Cursor move | moved > 15 px before release — no button event ever fires |
 | Drag | held > 700 ms while staying under 25 px, then movement drags |
 
@@ -217,15 +231,61 @@ since pinch-down — not raw hand displacement. Measuring post-gain means the cl
 tolerance stays constant in the space the user actually perceives it, rather than
 varying with how far the hand happens to be from the camera.
 
-Double-click is emitted as a single `Click(2)` intent so the actuator can set the
-Quartz click-state field, rather than posting two separate clicks and hoping macOS
-coalesces them.
+#### Double-click is a gesture, not a timing window
+
+Double-click was originally a Click whose predecessor had ended less than
+450 ms and 50 px away — the same index pinch, tapped twice quickly. Diagnosis
+against the user's real recordings on 2026-08-10 showed this is undetectable
+for them:
+
+- Their one **deliberate** double-click had a release-to-release gap of
+  **0.399 s**.
+- Their **accidental** doubles — two separate, intended single clicks that
+  the old rule misread as one double — had gaps of **0.400 s, 0.300 s, and
+  0.201 s**.
+
+Those two distributions fully overlap; no single timing threshold sits
+between "deliberate" and "accidental" gaps in this data. Space did not
+separate them either — the accidental pairs were 0.7–3.8 px apart, the
+deliberate one 4.7 px, so the accidental doubles were *closer* together,
+meaning a tighter distance window would have made the false-positive rate
+worse, not better. Only a 0.20 s window eliminated the false doubles in this
+data, which is faster than the user can deliberately double-tap — i.e. no
+timing window exists that admits the deliberate case and excludes the
+accidental ones.
+
+Given design principle 1 ("a wrong action is worse than no action") and that
+a false double-click opens a file instead of selecting it, the fix is to stop
+using timing at all. Double-click is now a **second, independent pinch
+channel** — middle-tip-to-thumb instead of index-tip-to-thumb — with its own
+hysteresis (`PINCH2_CLOSE` / `PINCH2_OPEN`) and no relationship to any
+previous click's timestamp or position:
+
+- index-tip-to-thumb pinch → `Click(1)`
+- middle-tip-to-thumb pinch → `Click(2)`
+
+Thresholds are measured, not guessed: while genuinely index-pinching, the
+user's middle-to-thumb ratio (`pinch2_ratio`) ran 0.43–0.90 across their
+recordings (median 0.64), and across 1060 recorded frames only one dipped
+below 0.35. `PINCH2_CLOSE = 0.30` / `PINCH2_OPEN = 0.40` sit safely under
+that floor with hysteresis room to spare, so an ordinary index click does not
+misread as a double.
+
+**Do not reintroduce timing-based double-click detection.** The overlap
+above is not a tuning problem to be solved with a different constant — the
+deliberate and accidental distributions genuinely overlap for this user, so
+no threshold on gap or distance can separate them.
+
+`Click(n)` is still emitted as a single intent (rather than two separate
+`Click(1)`s) so the actuator can set the Quartz click-state field directly,
+rather than posting two clicks and hoping macOS coalesces them.
 
 ### Hysteresis
 
 Every threshold with a boundary gets two values, never one:
 
-- pinch closes at 0.35, reopens at 0.45
+- index pinch closes at 0.35, reopens at 0.45
+- middle pinch (double-click) closes at 0.30, reopens at 0.40
 - gate arms in 300 ms, disarms in 500 ms
 - scroll posture engages in 200 ms, releases immediately
 
@@ -339,7 +399,8 @@ Three layers, matching the module purity boundary.
 **Unit tests (pure modules).** Synthetic landmark arrays, no camera, millisecond
 runtime.
 
-- `features`: pinch ratio is invariant to hand scale and to rotation; finger
+- `features`: pinch ratio is invariant to hand scale and to rotation; `pinch2_ratio`
+  is likewise scale-invariant and independent of the index pinch; finger
   extension is correct for known hand poses; mirroring is applied exactly once
 - `gate`: arms only after the full dwell; does not disarm when fingers curl to
   pinch (the asymmetry above); rejects out-of-range `hand_scale`
@@ -353,21 +414,35 @@ timestamps). Replaying a recording through the state machine must yield an exact
 intent sequence. Seed recordings to capture:
 
 - five deliberate clicks → exactly `[Click(1)] × 5`
-- one double-click → exactly `[Click(2)]`, never two `Click(1)`
 - a drag from A to B → exactly one `DragStart`, then `Move`s, then one `DragEnd`
 - a hand reaching past the camera for a coffee cup → zero intents
 - talking with hands in frame for 30 s → zero intents
 - one sweep → exactly one `Space`
 
-The last three are the false-positive regression net. They are what allow
-thresholds to be retuned later without silently reintroducing stray clicks.
+`one_double_click.jsonl` and `live_clicks.jsonl` predate the middle-pinch
+gesture — both were recorded as rapid index taps under the old timing-based
+design, and both used to contain false `Click(2)`s (`live_clicks.jsonl` had
+three). They are kept as the regression test for exactly that misfire: under
+the current design both must yield only `Click(1)`s and never a `Click(2)`.
+**Still needed:** a fixture recorded with an actual middle-tip-to-thumb pinch,
+to prove `Click(2)` fires from real motion rather than only in synthetic unit
+tests.
+
+The false-positive fixtures (reaching past, talking hands) are the
+regression net that lets thresholds be retuned later without silently
+reintroducing stray clicks.
 
 **Manual smoke checklist** for `actuator` and `hud`, the two modules that must
 touch the real OS. Run with `--dry-run` first, then live.
 
 **Dry-run mode.** `--dry-run` substitutes a logging actuator: the full pipeline
 runs, the HUD is live, and no real events are posted. All threshold tuning happens
-here.
+here. `main.py` coalesces consecutive `move` log lines into a single `move xN`
+summary — `move` fires roughly once per camera frame (~30/s), so printed
+one-per-line it drowns out the discrete events (clicks, drags, scrolls,
+spaces) that tuning actually needs to see; those still print immediately, one
+line each. This is display-only bookkeeping in `main.py`, not a change to
+what the actuator logs or to `DryRunActuator.log`.
 
 ## Tuning parameters
 
@@ -381,11 +456,11 @@ through logic.
 
 | Parameter | Start | Governs |
 |---|---|---|
-| `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | pinch detection, with hysteresis |
+| `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | index pinch detection, with hysteresis |
+| `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `TAP_MAX_S` | 550 | click vs. cursor move |
 | `TAP_MAX_PX` | 25 | click vs. cursor move |
-| `DOUBLE_MS` / `DOUBLE_PX` | 450 / 50 | double-click recognition |
 | `DRAG_DWELL_MS` | 700 | drag vs. move |
 | `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |
@@ -393,6 +468,7 @@ through logic.
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no scroll is emitted |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |
 | `SWIPE_COOLDOWN_MS` | 800 | prevents multi-Space skips |
+| `DRY_RUN_FLUSH_S` | 1000 | max age of a coalesced `move` run in `--dry-run` output before it flushes |
 | `EURO_MIN_CUTOFF` / `EURO_BETA` | 1.0 / 0.7 | jitter vs. lag |
 
 ## Repository layout

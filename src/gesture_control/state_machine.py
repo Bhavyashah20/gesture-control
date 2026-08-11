@@ -28,11 +28,11 @@ class StateMachine:
         self._ref: Point2 | None = None
         self._t: float | None = None
         self._pinch_closed = False
+        self._pinch2_closed = False
+        self._click_n: int | None = None
         self._virtual = Point2(0.0, 0.0)
         self._pinch_t0: float | None = None
         self._pinch_travel = 0.0
-        self._last_click_t: float | None = None
-        self._last_click_pos: Point2 | None = None
         self._scroll_since: float | None = None
         self._swipe_hist: deque[tuple[float, float]] = deque()
         self._swipe_last: float | None = None
@@ -47,38 +47,34 @@ class StateMachine:
 
     def _reset_transient(self) -> None:
         self._pinch_closed = False
+        self._pinch2_closed = False
+        self._click_n = None
         self._ref = None
         self._t = None
         self._pinch_t0 = None
         self._pinch_travel = 0.0
 
-    def _update_pinch(self, f: Features) -> tuple[bool, bool]:
-        """Returns (pressed_this_frame, released_this_frame)."""
-        if self._pinch_closed:
-            if f.pinch_ratio > config.PINCH_OPEN:
-                self._pinch_closed = False
-                return False, True
+    @staticmethod
+    def _update_pinch(
+        ratio: float, closed: bool, close_thr: float, open_thr: float
+    ) -> tuple[bool, bool, bool]:
+        """One hysteresis step for a single pinch channel.
+
+        Returns (closed, pressed_this_frame, released_this_frame).
+        """
+        if closed:
+            if ratio > open_thr:
+                return False, False, True
         else:
-            if f.pinch_ratio < config.PINCH_CLOSE:
-                self._pinch_closed = True
-                return True, False
-        return False, False
+            if ratio < close_thr:
+                return True, True, False
+        return closed, False, False
 
     def _classify_release(self, f: Features) -> list[Intent]:
         held = f.t - self._pinch_t0 if self._pinch_t0 is not None else 0.0
         if held > config.TAP_MAX_S or self._pinch_travel >= config.TAP_MAX_PX:
             return []
-
-        n = 1
-        if self._last_click_t is not None and self._last_click_pos is not None:
-            gap = f.t - self._last_click_t
-            near = math.dist(self._virtual, self._last_click_pos)
-            if gap <= config.DOUBLE_MAX_S and near <= config.DOUBLE_MAX_PX:
-                n = 2
-
-        self._last_click_t = f.t
-        self._last_click_pos = self._virtual if n == 1 else None
-        return [Click(n)]
+        return [Click(self._click_n)]
 
     def _detect_swipe(self, f: Features) -> list[Intent]:
         self._swipe_hist.append((f.t, f.cursor_ref.x))
@@ -125,10 +121,21 @@ class StateMachine:
         dyn = ref.y - self._ref.y if self._ref is not None else 0.0
         self._ref, self._t = ref, f.t
 
-        pressed, released = self._update_pinch(f)
+        self._pinch_closed, pressed1, released1 = self._update_pinch(
+            f.pinch_ratio, self._pinch_closed, config.PINCH_CLOSE, config.PINCH_OPEN
+        )
+        self._pinch2_closed, pressed2, released2 = self._update_pinch(
+            f.pinch2_ratio, self._pinch2_closed, config.PINCH2_CLOSE, config.PINCH2_OPEN
+        )
+        # Index wins: a false single click is less damaging than a false
+        # double, so the middle pinch is only ever consulted when the index
+        # pinch is not the one that's closed.
+        released = released1 if self._click_n == 1 else released2
 
         if self._state is State.ARMED_IDLE:
-            if pressed:
+            click_n = 1 if pressed1 else 2 if pressed2 and not self._pinch_closed else None
+            if click_n is not None:
+                self._click_n = click_n
                 self._state = State.TRACKING
                 self._pinch_t0 = f.t
                 self._pinch_travel = 0.0

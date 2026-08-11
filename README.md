@@ -11,9 +11,9 @@ The vocabulary mirrors the macOS trackpad, so there is no new mental model.
 | Gesture | Action |
 |---|---|
 | Open palm to camera, hold briefly | Arm the system |
-| Pinch and move | Move the cursor |
-| Pinch and release quickly | Click |
-| Two quick pinches | Double-click |
+| Pinch (index finger) and move | Move the cursor |
+| Pinch (index finger) and release quickly | Click |
+| Pinch (middle finger) and release quickly | Double-click |
 | Pinch, hold still, then move | Drag |
 | Index and middle finger up, move vertically | Scroll |
 | Open palm, sweep sideways | Previous or next fullscreen Space |
@@ -21,6 +21,12 @@ The vocabulary mirrors the macOS trackpad, so there is no new mental model.
 
 Think of the pinch as your fingertip on the trackpad glass. Releasing it lifts
 off, which is how you reposition your hand without moving the cursor.
+
+Double-click is a distinct gesture, not two fast clicks: pinch your middle
+finger to your thumb instead of your index finger. If the index finger is
+pinching, that always wins and reads as a single click, even if the middle
+finger is pinching too — a false single click is far less damaging than a
+false double.
 
 ## Setup
 
@@ -55,6 +61,11 @@ enabled in System Settings → Keyboard → Shortcuts. They are on by default.
 
 Always start with `--dry-run` after changing anything in `config.py`.
 
+`--dry-run` prints one line per action. `move` fires roughly 30 times a
+second, so consecutive moves are folded into a single `move x34`-style
+summary instead of scrolling every click off screen; every click, drag, scroll,
+or space event still prints immediately, on its own line.
+
 If the project is not installed (`pip install -e ".[dev]"` was skipped), run
 with `PYTHONPATH=src` instead:
 
@@ -88,6 +99,11 @@ run together — but drives the exact same pipeline, so it combines with
 
 Every threshold lives in `src/gesture_control/config.py`. Change one, then run
 the replay suite to see what it broke:
+
+`PINCH2_CLOSE` / `PINCH2_OPEN` govern the double-click (middle-tip-to-thumb)
+gesture, with the same hysteresis pattern as `PINCH_CLOSE` / `PINCH_OPEN`.
+They are set well below the middle-to-thumb ratio observed while genuinely
+index-pinching, so an ordinary click does not misread as a double.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v
