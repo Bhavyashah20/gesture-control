@@ -142,13 +142,38 @@ def test_index_pinch_tap_still_emits_click_one():
     assert out == [Click(1)]
 
 
-def test_both_pinches_closed_prioritizes_click_one():
-    """A false single click is less damaging than a false double."""
+def test_both_pinches_closed_index_closer_gives_click_one():
+    """Whichever finger is actually closer to the thumb at pinch-down decides."""
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2, pinch2=0.2))
+    sm.update(feat(t, pinch=0.10, pinch2=0.32))
     out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
     assert out == [Click(1)]
+
+
+def test_both_pinches_closed_middle_closer_gives_click_two():
+    """Whichever finger is actually closer to the thumb at pinch-down decides."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.32, pinch2=0.10))
+    out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
+    assert out == [Click(2)]
+
+
+def test_middle_pinch_wins_even_when_index_also_reads_closed():
+    """Anatomically, pinching the middle fingertip to the thumb drags the index
+    along with it, so the index often reads below PINCH_CLOSE too. Values
+    below are drawn from a real frame in recordings/middle_pinch.jsonl
+    (t=3.776s: pinch=0.32, pinch2=0.1686) -- exactly the case that converted
+    intended double-clicks into single clicks under the old fixed-priority
+    rule, which always read a closed index as Click(1) regardless of the
+    middle finger. This must fail against that old rule.
+    """
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.32, pinch2=0.1686))
+    out = sm.update(feat(t + 0.10, pinch=0.9, pinch2=0.9))
+    assert out == [Click(2)]
 
 
 def test_rapid_index_taps_never_emit_click_two():

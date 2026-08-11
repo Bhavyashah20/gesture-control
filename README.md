@@ -23,10 +23,13 @@ Think of the pinch as your fingertip on the trackpad glass. Releasing it lifts
 off, which is how you reposition your hand without moving the cursor.
 
 Double-click is a distinct gesture, not two fast clicks: pinch your middle
-finger to your thumb instead of your index finger. If the index finger is
-pinching, that always wins and reads as a single click, even if the middle
-finger is pinching too — a false single click is far less damaging than a
-false double.
+finger to your thumb instead of your index finger. Whichever fingertip is
+actually closer to your thumb when the pinch closes decides which one it is
+— not which finger you technically moved first. This matters because
+pinching your middle finger to your thumb naturally drags your index
+fingertip part of the way in too, so both can read as "closed" at once; an
+earlier version of this rule let the index finger win by default whenever
+that happened, which silently turned real double-clicks into single clicks.
 
 ## Setup
 

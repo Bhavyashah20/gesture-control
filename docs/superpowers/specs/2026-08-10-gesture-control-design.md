@@ -184,22 +184,41 @@ All states fall back to `ArmedIdle` when their triggering posture ends, and to
 | From | To | Trigger |
 |---|---|---|
 | `Disarmed` | `ArmedIdle` | posture gate arms |
-| `ArmedIdle` | `Tracking` | `pinch_ratio` < 0.35 (index); record anchor, time, and `click_n = 1` |
-| `ArmedIdle` | `Tracking` | `pinch2_ratio` < 0.30 (middle), only if the index pinch is not closed; record anchor, time, and `click_n = 2` |
+| `ArmedIdle` | `Tracking` | `pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30 (either finger); record anchor, time, and `click_n = 2 if pinch2_ratio < pinch_ratio else 1` |
 | `ArmedIdle` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
 | `ArmedIdle` | `ArmedIdle` | horizontal sweep → emit `Space` |
-| `Tracking` | `ArmedIdle` | the pinch that opened `Tracking` releases (index: `pinch_ratio` > 0.45; middle: `pinch2_ratio` > 0.40); may emit `Click(click_n)` |
+| `Tracking` | `ArmedIdle` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); may emit `Click(click_n)` |
 | `Tracking` | `Drag` | pinch held > 700 ms with total movement < 25 px; emit `DragStart` |
-| `Drag` | `ArmedIdle` | the pinch that opened `Tracking` releases; emit `DragEnd` |
+| `Drag` | `ArmedIdle` | the pinch releases (same both-clear rule as above); emit `DragEnd` |
 | `Scroll` | `ArmedIdle` | scroll posture lost |
 | any | `Disarmed` | posture gate disarms; releases any held button first |
 
-**Index wins.** If the index pinch is closed on a given frame, that is a
-single-click gesture regardless of what the middle finger is doing — the
-middle pinch is only ever consulted when the index pinch is open. Both
-pinches otherwise behave identically once `Tracking` starts: either can move
-the cursor while held, and either can start a `Drag` past `DRAG_DWELL_S`.
-Drag is never special-cased by which finger opened it.
+**One combined pinch channel, closer finger wins.** There is a single pinch
+state, not two independent trackers: it closes the instant *either*
+`pinch_ratio` or `pinch2_ratio` crosses its own CLOSE threshold, and it does
+not reopen until *both* ratios have cleared their OPEN thresholds. At the
+moment it closes, whichever finger's ratio is numerically smaller — i.e.
+physically closer to the thumb on that frame — decides `click_n`:
+`click_n = 2 if pinch2_ratio < pinch_ratio else 1`. Both pinches otherwise
+behave identically once `Tracking` starts: either can move the cursor while
+held, and either can start a `Drag` past `DRAG_DWELL_S`. Drag is never
+special-cased by which finger opened it.
+
+This replaces an earlier "index wins" fixed-priority rule (if the index
+pinch was closed on a given frame, that was unconditionally a single click,
+regardless of the middle finger) that live data proved wrong. Anatomically,
+pinching the middle fingertip to the thumb drags the index tip along with
+it: in `recordings/middle_pinch.jsonl` (15 s, 8 deliberate middle-pinches),
+43 of the 417 present frames read `pinch_ratio` < `PINCH_CLOSE` even though
+the user was never pinching their index finger. Under fixed priority that
+silently downgraded several intended double-clicks to single clicks — the
+replay produced `[Click(2), Click(1), Click(2), Click(1), Click(2)]`, 3
+doubles from 8 deliberate attempts. The closer-finger rule was validated
+against all three recordings (index taps never misread as doubles; the
+margin between the two ratios never approaches a tie: 0.32–0.66 during
+genuine index clicks, 0.09–0.41 during genuine middle pinches), so no
+dead-band between the two ratios was added — the data shows none is needed.
+**Do not reintroduce fixed priority between the two channels.**
 
 ### Continuous emissions
 
@@ -418,15 +437,21 @@ intent sequence. Seed recordings to capture:
 - a hand reaching past the camera for a coffee cup → zero intents
 - talking with hands in frame for 30 s → zero intents
 - one sweep → exactly one `Space`
+- eight deliberate middle-pinches → mostly `Click(2)`, proving the disambiguation
+  fires from real motion rather than only in synthetic unit tests
 
 `one_double_click.jsonl` and `live_clicks.jsonl` predate the middle-pinch
 gesture — both were recorded as rapid index taps under the old timing-based
 design, and both used to contain false `Click(2)`s (`live_clicks.jsonl` had
 three). They are kept as the regression test for exactly that misfire: under
 the current design both must yield only `Click(1)`s and never a `Click(2)`.
-**Still needed:** a fixture recorded with an actual middle-tip-to-thumb pinch,
-to prove `Click(2)` fires from real motion rather than only in synthetic unit
-tests.
+
+`recordings/middle_pinch.jsonl` (added 2026-08-11) is the fixture that
+disproved the original "index wins" fixed-priority rule — see "Pinch
+disambiguation" above. Its replay is not asserted to an exact click count:
+alongside its 8 deliberate middle-pinches it also contains one accidental
+drag (a 2.568 s hold) and two genuine index pinches, which is real user
+behaviour worth preserving in the fixture rather than noise to assert away.
 
 The false-positive fixtures (reaching past, talking hands) are the
 regression net that lets thresholds be retuned later without silently

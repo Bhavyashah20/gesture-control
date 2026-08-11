@@ -3,6 +3,23 @@
 PINCH_CLOSE = 0.35
 PINCH_OPEN = 0.45
 
+# Which finger opened the pinch (index -> Click(1), middle -> Click(2)) is
+# decided by comparing pinch_ratio to pinch2_ratio at the moment either one
+# first crosses its own CLOSE threshold below -- NOT by a fixed priority
+# ("index always wins if closed"). That fixed-priority rule was the original
+# design and was wrong: anatomically, pinching the middle fingertip to the
+# thumb drags the index tip along with it, so the index channel often also
+# reads closed during a genuine middle pinch. In the user's
+# recordings/middle_pinch.jsonl (15 s, 8 deliberate middle-pinches), 43 of
+# 417 present frames read pinch_ratio < PINCH_CLOSE even though the user
+# never pinched their index finger -- under fixed priority that silently
+# turned several intended double-clicks into single clicks. Closeness at
+# pinch-down was validated against all three recordings on 2026-08-11 and
+# correctly resolves every case, with no dead-band needed: the margin
+# between the two ratios is 0.32-0.66 during genuine index clicks and
+# 0.09-0.41 during genuine middle pinches, so the two never come close to
+# tying. Do not reintroduce fixed priority.
+
 # Double-click is its own gesture (middle-tip-to-thumb), not a timing window.
 # Diagnosed against real recordings 2026-08-10: the user's deliberate
 # double-click had a release-to-release gap of 0.399 s; three ACCIDENTAL

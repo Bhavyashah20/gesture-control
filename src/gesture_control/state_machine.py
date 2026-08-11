@@ -28,7 +28,6 @@ class StateMachine:
         self._ref: Point2 | None = None
         self._t: float | None = None
         self._pinch_closed = False
-        self._pinch2_closed = False
         self._click_n: int | None = None
         self._virtual = Point2(0.0, 0.0)
         self._pinch_t0: float | None = None
@@ -47,7 +46,6 @@ class StateMachine:
 
     def _reset_transient(self) -> None:
         self._pinch_closed = False
-        self._pinch2_closed = False
         self._click_n = None
         self._ref = None
         self._t = None
@@ -55,18 +53,24 @@ class StateMachine:
         self._pinch_travel = 0.0
 
     @staticmethod
-    def _update_pinch(
-        ratio: float, closed: bool, close_thr: float, open_thr: float
-    ) -> tuple[bool, bool, bool]:
-        """One hysteresis step for a single pinch channel.
+    def _update_pinch(f: Features, closed: bool) -> tuple[bool, bool, bool]:
+        """One hysteresis step over the single, combined pinch state.
+
+        Either channel closing closes the pinch; both channels must reopen
+        to release it. This keeps the existing hysteresis guarantee (no
+        chatter while either finger is still near the thumb) while letting
+        either finger initiate a pinch -- required because pinching the
+        middle fingertip to the thumb drags the index along with it, so the
+        index channel alone often also reads closed during a deliberate
+        middle pinch.
 
         Returns (closed, pressed_this_frame, released_this_frame).
         """
         if closed:
-            if ratio > open_thr:
+            if f.pinch_ratio > config.PINCH_OPEN and f.pinch2_ratio > config.PINCH2_OPEN:
                 return False, False, True
         else:
-            if ratio < close_thr:
+            if f.pinch_ratio < config.PINCH_CLOSE or f.pinch2_ratio < config.PINCH2_CLOSE:
                 return True, True, False
         return closed, False, False
 
@@ -121,21 +125,13 @@ class StateMachine:
         dyn = ref.y - self._ref.y if self._ref is not None else 0.0
         self._ref, self._t = ref, f.t
 
-        self._pinch_closed, pressed1, released1 = self._update_pinch(
-            f.pinch_ratio, self._pinch_closed, config.PINCH_CLOSE, config.PINCH_OPEN
-        )
-        self._pinch2_closed, pressed2, released2 = self._update_pinch(
-            f.pinch2_ratio, self._pinch2_closed, config.PINCH2_CLOSE, config.PINCH2_OPEN
-        )
-        # Index wins: a false single click is less damaging than a false
-        # double, so the middle pinch is only ever consulted when the index
-        # pinch is not the one that's closed.
-        released = released1 if self._click_n == 1 else released2
+        self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
 
         if self._state is State.ARMED_IDLE:
-            click_n = 1 if pressed1 else 2 if pressed2 and not self._pinch_closed else None
-            if click_n is not None:
-                self._click_n = click_n
+            if pressed:
+                # Whichever finger is actually closer to the thumb at
+                # pinch-down decides the gesture -- see config.py for why.
+                self._click_n = 2 if f.pinch2_ratio < f.pinch_ratio else 1
                 self._state = State.TRACKING
                 self._pinch_t0 = f.t
                 self._pinch_travel = 0.0
