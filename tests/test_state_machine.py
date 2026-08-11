@@ -396,6 +396,8 @@ def test_releasing_an_ordinary_pinch_never_leaves_the_cursor_frozen():
 # --- Scroll (unchanged behaviour, new resting-state name) ---
 
 TWO = (True, True, False, False)
+TWO_PINKY_EXTENDED = (True, True, False, True)
+FULLY_OPEN = (True, True, True, True)
 
 
 def test_two_finger_posture_enters_scroll_after_dwell():
@@ -403,6 +405,43 @@ def test_two_finger_posture_enters_scroll_after_dwell():
     t = arm(sm)
     sm.update(feat(t, fingers=TWO))
     sm.update(feat(t + 0.25, fingers=TWO))
+    assert sm.state is State.SCROLL
+
+
+def test_scroll_posture_with_extended_pinky_enters_scroll_after_dwell():
+    """The relaxed scroll posture: index and middle extended, ring not extended,
+    pinky ignored. Real recordings show the pinky is extended nearly always,
+    so this must work: (True, True, False, True) is the actual measured gesture."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO_PINKY_EXTENDED))
+    sm.update(feat(t + 0.25, fingers=TWO_PINKY_EXTENDED))
+    assert sm.state is State.SCROLL
+
+
+def test_fully_open_hand_does_not_enter_scroll():
+    """Fully extended fingers (all True) are not a scroll gesture and must not
+    trigger scroll even after dwell. The relaxation allows pinky to be
+    extended, but requires ring to be curled."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=FULLY_OPEN))
+    sm.update(feat(t + 0.25, fingers=FULLY_OPEN))
+    assert sm.state is State.TRACKING
+
+
+def test_scroll_entry_and_exit_consistency():
+    """Entry and exit conditions must be logically consistent: entering scroll
+    and then holding the same posture must not immediately exit. This tests
+    that the entry condition (dwell to SCROLL) and exit condition (any posture
+    change leaving SCROLL) are proper negations."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO_PINKY_EXTENDED))
+    sm.update(feat(t + 0.25, fingers=TWO_PINKY_EXTENDED))
+    assert sm.state is State.SCROLL
+    # Holding the same posture must not exit.
+    out = sm.update(feat(t + 0.30, fingers=TWO_PINKY_EXTENDED))
     assert sm.state is State.SCROLL
 
 

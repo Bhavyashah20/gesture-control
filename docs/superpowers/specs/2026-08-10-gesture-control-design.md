@@ -254,7 +254,7 @@ drag. All states fall back to `Disarmed` when the gate drops; the gate itself
 | `Disarmed` | `Tracking` | posture gate arms |
 | `Tracking` | `Frozen` | index curls: `index_curl_ratio` < `INDEX_CURL_CLOSE`, no pinch was open |
 | `Frozen` | `Tracking` | index uncurls: `index_curl_ratio` > `INDEX_CURL_OPEN` |
-| `Tracking` | `Scroll` | index + middle extended, ring + pinky curled, 200 ms |
+| `Tracking` | `Scroll` | index extended, middle extended, ring not extended, 200 ms (pinky ignored) |
 | `Tracking` | `Tracking` | horizontal sweep → emit `Space` |
 | `Tracking` or `Frozen` | `Pressed` | index not curled, pinch closes (`pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30, either finger) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
 | `Tracking` or `Frozen` | (unchanged) | index not curled, pinch closes and the **middle** channel is the closer one; emit `Click(2)`, no state change |

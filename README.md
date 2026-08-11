@@ -19,7 +19,7 @@ like picking up a file and moving your hand.
 | Move while pinched | Drag |
 | Release the pinch | Release the mouse button |
 | Pinch (middle finger) | Double-click |
-| Index and middle finger up, move vertically | Scroll |
+| Index and middle extended, ring curled, move vertically | Scroll |
 | Open palm, sweep sideways | Previous or next fullscreen Space |
 | `Esc` | Stop immediately |
 

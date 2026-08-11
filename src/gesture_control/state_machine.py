@@ -9,6 +9,17 @@ from .gate import Gate
 from .types import ButtonDown, ButtonUp, Click, Features, Intent, Move, Point2, Scroll, Space
 
 
+def _is_scroll_posture(f: Features) -> bool:
+    """Check if the hand posture is scroll-ready: index and middle fingers
+    extended, ring finger not extended. The pinky is ignored (it is unreliable
+    and contributes nothing to distinguishing this posture from others).
+
+    This predicate is used for both entry and exit conditions to ensure
+    consistency: enter scroll if this returns True after dwell, exit if it
+    returns False."""
+    return f.fingers_up[0] and f.fingers_up[1] and not f.fingers_up[2]
+
+
 class State(Enum):
     DISARMED = auto()
     FROZEN = auto()
@@ -170,7 +181,7 @@ class StateMachine:
             self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
 
         if self._state is State.SCROLL:
-            if f.fingers_up != (True, True, False, False):
+            if not _is_scroll_posture(f):
                 self._state = State.TRACKING
                 return intents
             px = dyn * config.SCROLL_GAIN
@@ -220,7 +231,7 @@ class StateMachine:
             self._virtual = Point2(self._virtual.x + dxp, self._virtual.y + dyp)
             intents.append(Move(dxp, dyp))
 
-        if f.fingers_up == (True, True, False, False):
+        if _is_scroll_posture(f):
             if self._scroll_since is None:
                 self._scroll_since = f.t
             elif f.t - self._scroll_since >= config.SCROLL_DWELL_S:
