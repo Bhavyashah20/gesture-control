@@ -45,3 +45,17 @@ def test_preflight_passes_when_model_and_accessibility_are_present(tmp_path, mon
     monkeypatch.setattr(main, "request_accessibility", lambda: True)
 
     assert preflight(False, str(model)) == []
+
+
+def test_preflight_accepts_access_granted_by_the_request(monkeypatch, tmp_path):
+    """The active request is what makes the app appear in the Accessibility list.
+
+    Without it the toggle does not exist for the user to switch on, so a
+    preflight that only reads the current state and never asks is a real
+    regression. This is the only case where asking changes the outcome.
+    """
+    model = tmp_path / "hand_landmarker.task"
+    model.write_bytes(b"")
+    monkeypatch.setattr(main, "accessibility_granted", lambda: False)
+    monkeypatch.setattr(main, "request_accessibility", lambda: True)
+    assert main.preflight(dry_run=False, model=str(model)) == []

@@ -51,11 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     problems = preflight(args.dry_run, args.model)
     if problems:
         for p in problems:
-            print(f"error: {p}")
+            print(f"Error: {p}")
         return 1
 
     print("Space switching requires the Mission Control shortcuts "
-          "ctrl-left and ctrl-right to be enabled in System Settings, Keyboard.")
+          "Ctrl-left and Ctrl-right to be enabled in System Settings, Keyboard.")
 
     actuator = DryRunActuator() if args.dry_run else QuartzActuator()
     tracker = HandTracker(args.model)
@@ -69,8 +69,6 @@ def main(argv: list[str] | None = None) -> int:
         actuator.release_all()
 
     atexit.register(shutdown)
-    signal.signal(signal.SIGINT, lambda *_a: (shutdown(), hud.stop()))
-    signal.signal(signal.SIGTERM, lambda *_a: (shutdown(), hud.stop()))
 
     def tick() -> None:
         ok, image = camera.read()
@@ -84,6 +82,9 @@ def main(argv: list[str] | None = None) -> int:
         hud.set_state(machine.state, features.present)
 
     hud = Hud(on_tick=tick, tick_ms=config.HUD_TICK_MS)
+    signal.signal(signal.SIGINT, lambda *_a: (shutdown(), hud.stop()))
+    signal.signal(signal.SIGTERM, lambda *_a: (shutdown(), hud.stop()))
+
     try:
         hud.run()
     finally:
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         tracker.close()
         if args.record is not None:
             write_session(args.record, recorded)
-            print(f"wrote {len(recorded)} frames to {args.record}")
+            print(f"Wrote {len(recorded)} frames to {args.record}")
     return 0
 
 
