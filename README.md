@@ -196,10 +196,13 @@ more tremor rejection for coarser slow-movement steps; lowering it does the
 opposite. It applies identically whether you're just moving the cursor or
 dragging.
 
-`SCROLL_GAIN` (raised 900 → 5000 on 2026-08-11) governs scroll speed. If
-scroll ever feels too strong or too weak again, replay
+`SCROLL_GAIN` governs scroll speed; this is the constant you are most likely to
+want to adjust if scrolling feels too fast or too slow. A trackpad flick moves
+1000–2000 px/sec; the current value targets about 640 px/sec, which is brisk but
+still controllable. Scale it proportionally if you prefer slower or faster
+scrolling. If you change other constants and scroll stops working, replay
 `recordings/scroll_attempt.jsonl` and check the total pixel output before
-retuning — the previous "scroll does nothing" report turned out to be pure
+retuning — the original "scroll does nothing" report turned out to be pure
 magnitude, not a posture or timing bug, so check magnitude first.
 
 ```bash

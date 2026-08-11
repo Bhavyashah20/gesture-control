@@ -10,9 +10,11 @@ Three changes, each backed by measurement against the user's own recordings,
 addressing two reports: "cursor is too unstable to hit small targets like
 window close buttons" and "scroll does nothing."
 
-1. **`SCROLL_GAIN` raised 900 → 5000.** `recordings/scroll_attempt.jsonl`
+1. **`SCROLL_GAIN` raised 900 → 5000 → 20000.** `recordings/scroll_attempt.jsonl`
    proved scroll's posture detection and dwell logic were already correct;
-   the gain alone was ~10x too weak. See "Scroll" below.
+   the gain alone was insufficient. Further tuning showed 5000 was still too
+   weak (~160 px/sec, trackpad flicks are 1000–2000 px/sec); raised to 20000
+   targeting ~640 px/sec. See "Scroll" below.
 2. **Jitter deadzone with accumulation, `MOVE_DEADZONE_PX = 2.0`.** Sub-
    threshold per-frame `Move` deltas accumulate in a residual instead of
    being emitted or dropped outright, so random tremor cancels (cursor sits
@@ -557,12 +559,12 @@ confusing possible failure for the user.
 ### Scroll
 
 While in `Scroll`, vertical movement of `cursor_ref` maps to pixel-unit scroll
-events: `scroll_px = dy_normalized × SCROLL_GAIN`, with `SCROLL_GAIN = 5000`
-(raised from 900 on 2026-08-11 — see below). Natural scrolling direction is
-matched to the system setting by reading `com.apple.swipescrolldirection`; if
-unavailable, defaults to natural.
+events: `scroll_px = dy_normalized × SCROLL_GAIN`, with `SCROLL_GAIN = 20000`
+(raised from 900 → 5000 on 2026-08-11, further raised to 20000 on 2026-08-11 —
+see below). Natural scrolling direction is matched to the system setting by
+reading `com.apple.swipescrolldirection`; if unavailable, defaults to natural.
 
-**`SCROLL_GAIN` raised 900 → 5000 (2026-08-11): scroll was ~10x too weak.**
+**`SCROLL_GAIN` raised 900 → 5000 → 20000 (2026-08-11): scroll magnitude undertuned.**
 The user reported "scroll does nothing." `recordings/scroll_attempt.jsonl` (a
 new, dedicated 15 s deliberate-scrolling recording) proved this was a
 magnitude bug, not a posture or state-machine bug: 260 of 444 present frames
@@ -582,9 +584,12 @@ scrolls once `SCROLL_DWELL_S` has elapsed and drops any single event under
 both gains (220 px actual vs. 386 px projected at the old gain). Replayed for
 real at `GAIN=5000`, through the full pipeline including the palm-centroid
 `cursor_ref` and jitter-deadzone changes below: 118 `Scroll` intents totaling
-1362 px (median 3.9 px) — about 6.2x more scroll for the same gesture.
-`recordings/scroll_attempt.jsonl` is now a committed fixture and the
-regression test for scroll magnitude specifically (see "Testing" below).
+1362 px (median 3.9 px), about 160 px/sec — improved but still too slow for
+practical use (trackpad flicks move 1000–2000 px/sec). Further raised to
+`GAIN=20000`: 154 `Scroll` intents totaling 5538 px (median 9.1 px), about
+650 px/sec — brisk but still controllable. `recordings/scroll_attempt.jsonl`
+is a committed fixture and the regression test for scroll magnitude (see
+"Testing" below).
 
 ### Space switching
 
@@ -812,7 +817,7 @@ scroll, swipe, filter) are unchanged by this redesign.
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `BASE_GAIN_PX` | 2000 | cursor travel per hand movement; raised from 1600 to increase reach from 560 px to 1000 px per hand-sweep, enabling edge access on 1470 px display with index-curl clutch covering the rest; cost: hand tremor amplified |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.5 / 2.5 | precision floor vs. reach ceiling; ACCEL_MIN raised from 0.35 to 0.5 to increase slow-movement reach from 560 px to 1000 px per hand-sweep |
-| `SCROLL_GAIN` | 5000 | scroll speed; raised from 900 (2026-08-11) — see "Scroll" above. The old gain produced 220 px of total scroll for a deliberate 15 s gesture (`recordings/scroll_attempt.jsonl`); the new gain produces 1362 px for the same gesture |
+| `SCROLL_GAIN` | 20000 | scroll speed; raised from 900 → 5000 → 20000 (2026-08-11) — see "Scroll" above. GAIN=900 produced 220 px total, GAIN=5000 produced 1362 px (160 px/sec, too slow), GAIN=20000 produces 5538 px (650 px/sec). Scale proportionally if you prefer faster or slower scrolling |
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no single scroll event is emitted |
 | `MOVE_DEADZONE_PX` | 2.0 | jitter deadzone for `Move` (added 2026-08-11) — see "The jitter deadzone" above. Sub-threshold pixel deltas accumulate in a residual instead of being emitted or dropped, so tremor cancels but slow deliberate movement still arrives |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |

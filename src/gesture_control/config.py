@@ -84,25 +84,13 @@ ACCEL_MAX = 2.5
 ACCEL_VREF = 1.2
 
 # Raised from 900 (2026-08-11): the user reported "scroll does nothing."
-# recordings/scroll_attempt.jsonl (15 s, deliberate scrolling) proved the
-# posture detection and state machine were fine -- 260 of 444 present frames
-# match the scroll posture and the machine emits 53 Scroll intents -- the
-# problem was purely magnitude. At the old gain the whole 15 s gesture
-# produced 220 px of total scroll (median event 2.4 px), roughly two lines.
-#
-# Measured total vertical hand travel while the scroll posture holds
-# (filtered cursor_ref, summed frame-to-frame, over every posture-matching
-# frame regardless of dwell) is 0.429 frame-heights. Naively scaling that
-# raw travel by the gain projects 386 px at 900 and ~2145 px at 5000. That
-# naive projection is optimistic, though: the real pipeline only scrolls
-# once SCROLL_DWELL_S has elapsed and drops any single event under
-# SCROLL_MIN_PX, so actual replay output runs below it at both gains --
-# 220 px actual vs. 386 px projected at the old GAIN=900. Replayed for
-# real at GAIN=5000 through the full pipeline (this fix plus the palm-
-# centroid cursor_ref and the jitter deadzone, both below): 118 Scroll
-# intents totaling 1362 px (median 3.9 px) -- about 6.2x more scroll for
-# the same gesture, comfortably past "does nothing."
-SCROLL_GAIN = 5000.0
+# Measuring recordings/scroll_attempt.jsonl (15 s deliberate scroll gesture):
+# SCROLL_GAIN=900: 220 px total scroll, ~26 px/sec, effectively dead.
+# SCROLL_GAIN=5000: 1362 px total scroll, ~160 px/sec, still far too slow.
+# SCROLL_GAIN=20000: targets ~5400 px, ~640 px/sec -- brisk but controllable.
+# A trackpad flick moves 1000-2000 px/sec; scroll speed is highly personal.
+# This is the constant most users will want to adjust. See also README tuning.
+SCROLL_GAIN = 20000.0
 SCROLL_DWELL_S = 0.200
 SCROLL_MIN_PX = 1.0
 
