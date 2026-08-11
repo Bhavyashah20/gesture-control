@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import time
+from typing import Any, NamedTuple
 
 from . import config
 from .actuator import DryRunActuator, QuartzActuator, accessibility_granted, request_accessibility
@@ -14,8 +15,24 @@ from .features import extract
 from .hud import Hud
 from .landmarks import DEFAULT_MODEL_PATH, HandTracker, MODEL_URL
 from .recorder import write_session
-from .state_machine import StateMachine
-from .types import HandFrame
+from .state_machine import State, StateMachine
+from .types import Features, HandFrame, Intent
+
+
+class TickResult(NamedTuple):
+    """Everything one pipeline step produced, for whichever driver is running.
+
+    `image` is the RAW camera frame (or None if the read failed) — the exact
+    frame the tracker saw. Never mirror this one; `preview.py` makes its own
+    mirrored copy for display. See `features._palm_facing` for why the
+    tracker must never see a flipped frame.
+    """
+
+    image: Any
+    frame: HandFrame
+    features: Features
+    state: State
+    intents: list[Intent]
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -26,6 +43,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="also write the session to a jsonl file")
     p.add_argument("--camera", type=int, default=config.CAMERA_INDEX)
     p.add_argument("--model", default=DEFAULT_MODEL_PATH)
+    p.add_argument("--preview", action="store_true",
+                   help="show a live camera window with hand landmarks and the "
+                        "current state instead of the HUD pill")
     return p.parse_args(argv)
 
 
@@ -95,21 +115,71 @@ def main(argv: list[str] | None = None) -> int:
 
     atexit.register(shutdown)
 
-    def tick() -> None:
+    def _step() -> TickResult:
+        """One pipeline tick. The single source of per-frame work for both
+        drivers below — the Tk HUD path and the OpenCV preview path each call
+        this and only differ in how they render the result and drive time.
+        """
         ok, image = camera.read()
+        now = time.monotonic() - t0
         if not ok:
             # Still drive the pipeline with an absent frame so the gate's
             # timers advance and the watchdog can disarm and release a held
             # button. Otherwise a camera stall (sleep/wake, disconnect) mid
             # drag parks the state machine forever with the button down.
-            frame = HandFrame(points=(), t=time.monotonic() - t0, present=False, handedness="")
+            frame = HandFrame(points=(), t=now, present=False, handedness="")
         else:
-            frame = tracker.detect(image, time.monotonic() - t0)
+            frame = tracker.detect(image, now)
         if args.record is not None:
             recorded.append(frame)
         features = extract(frame)
-        actuator.apply(machine.update(features))
-        hud.set_state(machine.state, features.present)
+        intents = machine.update(features)
+        actuator.apply(intents)
+        return TickResult(
+            image=image if ok else None,
+            frame=frame,
+            features=features,
+            state=machine.state,
+            intents=intents,
+        )
+
+    def _teardown() -> None:
+        # Reused verbatim by both drivers below: release_all() before the
+        # camera and tracker close, same as the original single-driver code.
+        shutdown()
+        camera.close()
+        tracker.close()
+        if args.record is not None:
+            write_session(args.record, recorded)
+            print(f"Wrote {len(recorded)} frames to {args.record}")
+
+    if args.preview:
+        from . import preview as preview_ui
+
+        stopped = False
+
+        def request_stop(*_a: object) -> None:
+            nonlocal stopped
+            stopped = True
+            shutdown()
+
+        signal.signal(signal.SIGINT, request_stop)
+        signal.signal(signal.SIGTERM, request_stop)
+
+        try:
+            preview_ui.run(
+                _step,
+                shutdown,
+                clock=lambda: time.monotonic() - t0,
+                should_stop=lambda: stopped,
+            )
+        finally:
+            _teardown()
+        return 0
+
+    def tick() -> None:
+        result = _step()
+        hud.set_state(result.state, result.features.present)
 
     hud = Hud(on_tick=tick, tick_ms=config.HUD_TICK_MS, on_error=actuator.release_all)
     signal.signal(signal.SIGINT, lambda *_a: (shutdown(), hud.stop()))
@@ -118,12 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         hud.run()
     finally:
-        shutdown()
-        camera.close()
-        tracker.close()
-        if args.record is not None:
-            write_session(args.record, recorded)
-            print(f"Wrote {len(recorded)} frames to {args.record}")
+        _teardown()
     return 0
 
 

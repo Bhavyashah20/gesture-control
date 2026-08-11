@@ -49,14 +49,17 @@ class Hud:
         self._root = tk.Tk()
         self._root.overrideredirect(True)
         self._root.attributes("-topmost", True)
-        self._root.attributes("-alpha", 0.88)
+        self._root.attributes("-alpha", 0.97)
         self._root.geometry("+40+40")
         self._label = tk.Label(
             self._root, text="disarmed", fg="white", bg="#5F5E5A",
-            font=("Helvetica", 13), padx=14, pady=6,
+            font=("Helvetica", 24, "bold"), padx=22, pady=12,
         )
         self._label.pack()
         self._root.bind_all("<Escape>", lambda _e: self.stop())
+        # overrideredirect windows can spawn behind the terminal on macOS;
+        # lift() (on top of -topmost above) is what actually surfaces it.
+        self._root.lift()
 
     def set_state(self, state: State, present: bool) -> None:
         self._label.config(text=state_label(state, present), bg=_COLORS[state])

@@ -62,6 +62,28 @@ with `PYTHONPATH=src` instead:
 PYTHONPATH=src .venv/bin/python -m gesture_control.main --dry-run
 ```
 
+### Seeing what the system sees
+
+```bash
+.venv/bin/python -m gesture_control.main --dry-run --preview
+```
+
+`--preview` is the recommended way to see what the system is doing, and a
+much better starting point than the HUD pill. It opens an OpenCV window,
+mirrored like a selfie camera, showing the live feed with:
+
+- the 21 hand landmarks and finger skeleton drawn on your hand
+- the current state (`disarmed` / `armed` / `tracking` / `drag` / `scroll`)
+  as a large, colour-coded banner
+- the live `pinch_ratio` and whether the pinch currently reads as closed
+- the last click, drag, or space-switch, held on screen for about a second
+  so it doesn't scroll past unnoticed
+
+Press `Esc` or `q` to quit; this releases any held button the same way the
+HUD path does. `--preview` replaces the Tk HUD for that run — the two never
+run together — but drives the exact same pipeline, so it combines with
+`--dry-run` and `--record` normally.
+
 ## Tuning
 
 Every threshold lives in `src/gesture_control/config.py`. Change one, then run
