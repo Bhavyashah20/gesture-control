@@ -223,7 +223,7 @@ index, 2 for middle) at pinch-down and decides from what follows:
 | Outcome | Rule |
 |---|---|
 | Click | released within 550 ms, having moved < 25 px; emits `Click(click_n)` |
-| Cursor move | moved > 15 px before release — no button event ever fires |
+| Cursor move | moved > 25 px before release — no button event ever fires |
 | Drag | held > 700 ms while staying under 25 px, then movement drags |
 
 All distances here are **cursor screen pixels after gain is applied**, accumulated
