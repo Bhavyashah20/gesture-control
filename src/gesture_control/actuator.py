@@ -104,6 +104,13 @@ class QuartzActuator:
             self._q.CGEventSetIntegerValueField(
                 ev, self._q.kCGMouseEventClickState, clicks
             )
+        # A CGEvent created without explicit flags inherits the current
+        # system modifier state. Every synthesized mouse event here is a
+        # plain left-button action, so clear unconditionally: without this,
+        # a Control-flagged Space key event (see _key) posted shortly before
+        # a click can leave its flag inherited onto the click, and
+        # Control+click is right-click on macOS.
+        self._q.CGEventSetFlags(ev, 0)
         self._q.CGEventPost(self._q.kCGHIDEventTap, ev)
 
     def _move_by(self, dx: float, dy: float) -> None:

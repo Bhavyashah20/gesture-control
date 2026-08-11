@@ -199,6 +199,13 @@ above gets a chance to run.
   system's `com.apple.swipescrolldirection` preference. If you have natural
   scrolling turned off, scroll will feel inverted; negate `SCROLL_GAIN` in
   `config.py` as a workaround
+- If a right-click ever appears (this app posts no right-clicks of its own),
+  it indicates a modifier-flag leak: `_key` posts Control-flagged key events
+  for the Space switch gesture, and on macOS a plain left mouse-down created
+  without explicit flags inherits whatever modifier state is currently
+  active, so Control+click reads as a right-click. `QuartzActuator._post_mouse`
+  now explicitly clears flags (`CGEventSetFlags(ev, 0)`) on every mouse event
+  it posts to prevent this
 - `recordings/clutch.jsonl` (point/curl only, no pinching) still replays to
   one spurious `Click(2)`, at t=1.628s, where `index_curl_ratio` reads 1.936
   — deep in the pointing cluster, nowhere near a curl. It is a transient
