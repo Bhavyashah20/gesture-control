@@ -7,25 +7,32 @@ from gesture_control.types import HandFrame, Point3
 
 def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None,
               fingers=(True, True, True, True),
-              left=False, offset=(0.0, 0.0), t=0.0):
+              left=False, offset=(0.0, 0.0), t=0.0,
+              thumb_z=0.0, wrist_z=0.0):
     """Build a synthetic right hand, palm to camera, fingers up.
 
     Coordinates are pre-mirror (raw camera space), so extract() will flip x.
     In raw space a right hand has its index knuckle to the RIGHT of its pinky.
+
+    `thumb_z` / `wrist_z` are scale-relative z offsets (default 0.0, matching
+    every other test in this file) used solely to test the 3D-distance fix:
+    they let a test move a landmark purely in depth, with x/y held fixed, so
+    a distance that ignored z would be unchanged while one that includes it
+    would not.
     """
     ox, oy = offset
     pts = [Point3(0.0, 0.0, 0.0)] * 21
 
-    def put(i, x, y):
-        pts[i] = Point3(ox + x * scale, oy + y * scale, 0.0)
+    def put(i, x, y, z=0.0):
+        pts[i] = Point3(ox + x * scale, oy + y * scale, z * scale)
 
     thumb_y = 0.42 - pinch * 0.20            # thumb tip y, pinch is a ratio
 
-    put(0, 0.50, 0.60)                      # wrist
+    put(0, 0.50, 0.60, wrist_z)             # wrist
     put(9, 0.50, 0.40)                      # middle MCP -> hand_scale = 0.20
     put(5, 0.56, 0.42)                      # index MCP (raw: right of pinky)
     put(17, 0.44, 0.42)                     # pinky MCP
-    put(4, 0.56, thumb_y)                   # thumb tip
+    put(4, 0.56, thumb_y, thumb_z)          # thumb tip
 
     for idx, (pip, tip) in enumerate([(6, 8), (10, 12), (14, 16), (18, 20)]):
         base_x = 0.56 - idx * 0.04
@@ -146,6 +153,41 @@ def test_index_curl_ratio_is_lower_when_curled_than_open():
     open_hand = extract(make_hand(curl=1.71))
     curled = extract(make_hand(curl=1.15))
     assert curled.index_curl_ratio < open_hand.index_curl_ratio
+
+
+def test_pinch_ratio_includes_depth_not_just_the_2d_projection():
+    """MediaPipe also supplies z. If the thumb tip sits behind the index
+    tip in depth (same x/y projection as a flatter pinch, but separated in
+    z), a purely-2D distance is blind to that separation and under-reports
+    the pinch as tighter than it physically is -- exactly the failure the
+    user reported as "clicks fail at some hand orientations": rotating the
+    hand moves distance into the z axis, the 2D projection shrinks, and a
+    real pinch misreads as tighter (or a real non-pinch misreads as a
+    pinch) than it actually is. `_dist` must be a true 3D distance so the
+    reading is stable across orientation.
+    """
+    flat = extract(make_hand(pinch=0.30, thumb_z=0.0))
+    rotated = extract(make_hand(pinch=0.30, thumb_z=0.20))
+    assert rotated.pinch_ratio > flat.pinch_ratio
+    # And it must match a true 3D calculation, not just "some effect of z".
+    hand_scale = 0.20  # wrist(0,0) to middle MCP(0,-0.20) at scale=1.0, see put(9, ...)
+    expected = math.dist((0.56, 0.42 - 0.30 * 0.20, 0.20), (0.56, 0.24, 0.0)) / hand_scale
+    assert math.isclose(rotated.pinch_ratio, expected, abs_tol=1e-6)
+
+
+def test_hand_scale_also_uses_3d_distance_consistently_with_pinch():
+    """If `pinch_ratio`'s distance became 3D but `hand_scale`'s did not (or
+    vice versa), the two would no longer be normalized against the same
+    kind of measurement and every threshold calibrated against `hand_scale`
+    would silently shift. Moving the wrist purely in z (x/y held fixed)
+    must change `hand_scale`, proving both distances go through the same
+    3D `_dist`.
+    """
+    flat = extract(make_hand(wrist_z=0.0))
+    rotated = extract(make_hand(wrist_z=0.20))
+    assert rotated.hand_scale > flat.hand_scale
+    expected = math.dist((0.50, 0.60, 0.20), (0.50, 0.40, 0.0))
+    assert math.isclose(rotated.hand_scale, expected, abs_tol=1e-6)
 
 
 def test_index_curl_ratio_is_independent_of_pinch():

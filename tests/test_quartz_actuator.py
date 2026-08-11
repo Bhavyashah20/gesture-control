@@ -106,14 +106,44 @@ def test_button_up_clears_flags():
     assert moves[0].flags == 0
 
 
-def test_click_double_clears_flags():
+def test_click_single_posts_one_down_up_pair_at_state_one():
+    """`Click(1)` is unchanged: one down/up pair, click-state 1."""
+    a = _bare_actuator()
+    a.apply([Click(1)])
+    moves = _mouse_events(a._q)
+    assert len(moves) == 2
+    assert [e.cg_kind for e in moves] == [
+        a._q.kCGEventLeftMouseDown,
+        a._q.kCGEventLeftMouseUp,
+    ]
+    for ev in moves:
+        assert ev.flags == 0
+        assert ev.fields[a._q.kCGMouseEventClickState] == 1
+
+
+def test_click_double_posts_a_real_macos_double_click_sequence():
+    """`Click(2)` must be a valid macOS double-click: a full click at
+    click-state 1 followed by a full click at click-state 2 -- NOT a single
+    down/up pair posted with click-state 2, which macOS does not recognize
+    as a double-click at all (that was the bug: the user had to
+    double-click twice to open a file). Asserts the exact four-event
+    sequence, all at the same cursor position captured once up front, all
+    with flags cleared.
+    """
     a = _bare_actuator()
     a.apply([Click(2)])
     moves = _mouse_events(a._q)
-    assert len(moves) == 2
+    assert len(moves) == 4
+    assert [e.cg_kind for e in moves] == [
+        a._q.kCGEventLeftMouseDown,
+        a._q.kCGEventLeftMouseUp,
+        a._q.kCGEventLeftMouseDown,
+        a._q.kCGEventLeftMouseUp,
+    ]
+    assert [e.fields[a._q.kCGMouseEventClickState] for e in moves] == [1, 1, 2, 2]
     for ev in moves:
         assert ev.flags == 0
-        assert ev.fields[a._q.kCGMouseEventClickState] == 2
+        assert ev.point == (100.0, 200.0)
 
 
 def test_space_posts_control_flagged_key_down_and_matching_key_up():

@@ -36,7 +36,17 @@ def _mirror(p: Point3) -> Point3:
 
 
 def _dist(a: Point3, b: Point3) -> float:
-    return math.hypot(a.x - b.x, a.y - b.y)
+    """True 3D distance, including MediaPipe's z (depth, wrist-relative).
+
+    A 2D-only projection (hypot on x, y alone) shrinks whenever the hand
+    rotates, even though the physical distance between the two landmarks
+    has not changed -- the same pinch reads as tighter or looser purely
+    from hand orientation. Every caller of `_dist` (pinch, pinch2, curl,
+    AND hand_scale) goes through this one function, so the pinch distances
+    and their normalizer stay on the same footing; do not special-case any
+    of them back to 2D without updating the others to match.
+    """
+    return math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
 
 
 def _palm_facing(pts: tuple[Point3, ...], handedness: str) -> bool:

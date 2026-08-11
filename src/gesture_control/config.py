@@ -93,7 +93,22 @@ SWIPE_HOLD_S = 0.100
 SWIPE_WINDOW_S = 0.350
 SWIPE_COOLDOWN_S = 0.800
 
-EURO_MIN_CUTOFF = 1.0
+EURO_MIN_CUTOFF = 0.4
+# Lowered from 1.0 (2026-08-11): 1.0 was fine at the old gain, but at
+# BASE_GAIN_PX = 2000 and ACCEL_MIN = 0.5 (raised from 1600 / 0.35 for
+# display-edge reach -- see BASE_GAIN_PX's comment) the same hand tremor now
+# produces roughly twice the cursor movement it used to, so the
+# resting-state smoothing had to increase to compensate -- the user's
+# reported symptom was "cursor too jumpy to hit small targets like window
+# close buttons." A lower min_cutoff smooths harder specifically when the
+# hand is nearly still (small |dx_hat|, so the adaptive cutoff term
+# EURO_BETA * |dx_hat| stays near zero and min_cutoff dominates); it does
+# NOT add lag when the hand moves fast, because at high speed the same
+# adaptive term raises the cutoff back up regardless of min_cutoff. This
+# trades a little responsiveness at very low speeds -- the cursor settles
+# fractionally slower right as the hand stops -- for the ability to land on
+# small targets, which is the trade the user asked for.
+#
 # Deliberately 0.7, NOT the canonical One Euro paper value of 0.007. That
 # constant is calibrated for pixel-scale coordinates; this project feeds the
 # filter normalized [0,1] landmark coordinates, where speeds are three orders

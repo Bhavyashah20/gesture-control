@@ -136,9 +136,20 @@ class QuartzActuator:
                 case Move(dx, dy):
                     self._move_by(dx, dy)
                 case Click(n):
+                    # A macOS double-click is NOT one down/up pair posted with
+                    # kCGMouseEventClickState = 2 -- that is not a sequence
+                    # macOS recognizes as a double-click at all (this was the
+                    # bug: the user had to double-click twice to open a
+                    # file). It expects the full sequence: a complete click
+                    # at state 1, then a complete click at state 2. So post n
+                    # consecutive down/up pairs with the click-state field
+                    # set to 1, 2, ... n in order, all at the same cursor
+                    # position captured once before the sequence starts (the
+                    # position must not drift between the n sub-clicks).
                     x, y = self._cursor()
-                    self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=n)
-                    self._post_mouse(self._q.kCGEventLeftMouseUp, x, y, clicks=n)
+                    for state in range(1, n + 1):
+                        self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=state)
+                        self._post_mouse(self._q.kCGEventLeftMouseUp, x, y, clicks=state)
                 case ButtonDown():
                     # Set the flag before posting, not after: a signal landing
                     # mid-sequence then leaves release_all() believing the
