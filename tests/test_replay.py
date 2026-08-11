@@ -118,28 +118,24 @@ def test_middle_pinch_recording_yields_more_double_clicks_than_the_old_rule():
     replaying as exactly [Click(2), Click(1), Click(2), Click(1), Click(2)]:
     only 3 doubles.
 
-    NOTE ON THE ASSERTION VALUE: the design brief for this change estimated
-    "at least 8 Click(2) (measured 9)" for this fixture under the corrected
-    rule. That estimate does not hold once the corrected disambiguation is
-    threaded through the *unchanged* TAP_MAX_S / TAP_MAX_PX / DRAG_DWELL_S
-    classification that _classify_release still applies (as instructed).
-    Traced cause: the brief's 9/2/11 figures match a naive per-frame count of
-    raw threshold-crossing runs (13 of them, one a single-frame blip during
-    arming), not the hysteresis-merged press/release episodes the state
-    machine actually produces (10, of which one is the 2.6 s accidental
-    drag). Of the remaining 9, 5 exceed the existing 25 px travel budget --
-    one by just 1.9 px, others by much more (up to ~528 px) -- because
-    deliberate middle-pinching in this recording moves the index MCP (the
-    cursor reference point) substantially more than the index-pinch
-    recordings TAP_MAX_PX was calibrated against. That leaves 4, which is
-    what a full, deterministic replay actually yields. This is still a real
-    improvement over the old rule (3), so the assertion below is the
-    honestly-verified number, not the brief's unattained estimate -- see the
-    task report for the full writeup and a recommendation.
+    A prior pass at this fixture (with the closer-finger rule in place but
+    still sharing a single 25 px travel budget between both fingers)
+    measured 4: of 8 deliberate attempts, 7 reach TRACKING release classified
+    click_n==2, and 5 of those 7 exceed 25 px of pinch travel because a
+    middle pinch disturbs the index MCP (the cursor reference point) about
+    twice as much as an index pinch does.
+
+    With TAP2_MAX_PX giving click_n==2 its own, looser (60 px) travel
+    budget, this recording measures exactly 6 doubles: of those same 7
+    click_n==2 episodes, only one now exceeds the budget (travel ~267 px, a
+    genuine large motion, not a near-miss), and the 8th attempt never reaches
+    _classify_release at all -- it's a deliberate 2.6 s hold that correctly
+    takes the DRAG path instead. 6 of 8 registering is exactly what the
+    config.py TAP2_MAX_PX comment documents.
     """
     clicks = [i for i in _replay("middle_pinch") if isinstance(i, Click)]
     doubles = [c for c in clicks if c == Click(2)]
-    assert len(doubles) >= 4
+    assert len(doubles) >= 6
 
 
 def test_live_clicks_recording_never_produces_a_double():

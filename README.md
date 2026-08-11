@@ -108,6 +108,17 @@ gesture, with the same hysteresis pattern as `PINCH_CLOSE` / `PINCH_OPEN`.
 They are set well below the middle-to-thumb ratio observed while genuinely
 index-pinching, so an ordinary click does not misread as a double.
 
+`TAP2_MAX_PX` is the middle-pinch double-click's own travel budget, separate
+from `TAP_MAX_PX` (which still governs the index tap, and the drag rule
+regardless of finger). Closing the middle finger to the thumb disturbs the
+whole hand about twice as much as an index pinch — median frame-to-frame
+reference motion of 5.31 vs. 2.66 (normalized units x1000), measured across
+real recordings — so the single `TAP_MAX_PX`, calibrated against index
+pinches, rejected most genuine double-clicks on TRAVEL. At 60 px, 6 of 8 real
+middle-pinch attempts register, against 3 of 8 at 25 px; the two that still
+don't are a deliberate 2.6 s hold (correctly a drag) and one that genuinely
+moved 283 px, so raising the budget further would not help.
+
 ```bash
 .venv/bin/pytest tests/test_replay.py -v
 ```

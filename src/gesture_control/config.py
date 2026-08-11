@@ -43,6 +43,17 @@ ARM_FINGERS_MIN = 3
 # them), and tap travel reaches 16.7 px (the original 15.0 sat mid-distribution).
 TAP_MAX_S = 0.550
 TAP_MAX_PX = 25.0
+
+# The middle-pinch double-click gesture disturbs the hand about twice as
+# much as an index pinch (median reference motion 5.31 vs 2.66 in
+# normalized units x1000, measured across real recordings), so it needs a
+# looser travel allowance than TAP_MAX_PX. Measured: at 60 px, 6 of 8 real
+# middle-pinch attempts register, against 3 of 8 at 25 px; raising it
+# further gains nothing, because the two remaining failures are a
+# deliberate 2.6 s hold (correctly a drag) and one that genuinely moved
+# 283 px.
+TAP2_MAX_PX = 60.0
+
 DRAG_DWELL_S = 0.700
 
 BASE_GAIN_PX = 1600.0

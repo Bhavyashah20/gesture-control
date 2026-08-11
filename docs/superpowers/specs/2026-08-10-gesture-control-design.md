@@ -484,8 +484,9 @@ through logic.
 | `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | index pinch detection, with hysteresis |
 | `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
-| `TAP_MAX_S` | 550 | click vs. cursor move |
-| `TAP_MAX_PX` | 25 | click vs. cursor move |
+| `TAP_MAX_S` | 550 | click vs. cursor move (shared by both click kinds) |
+| `TAP_MAX_PX` | 25 | index-tap travel budget |
+| `TAP2_MAX_PX` | 60 | middle-pinch (double-click) travel budget — looser than `TAP_MAX_PX` because closing the middle finger disturbs the whole hand about twice as much (median reference motion 5.31 vs. 2.66, normalized units x1000, across real recordings); measured 6/8 real middle-pinch attempts register at 60 px against 3/8 at 25 px, with the two remaining failures being a genuine 2.6 s hold (correctly a drag) and one that moved 283 px |
 | `DRAG_DWELL_MS` | 700 | drag vs. move |
 | `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |

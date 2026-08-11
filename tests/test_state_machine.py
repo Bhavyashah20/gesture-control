@@ -142,6 +142,66 @@ def test_index_pinch_tap_still_emits_click_one():
     assert out == [Click(1)]
 
 
+def _dx_for_travel(target_px, dt=0.05, iters=60):
+    """Binary-search the horizontal ref delta that produces `target_px` of
+    pinch travel, so tests can target travel amounts defined purely in terms
+    of the config thresholds instead of hardcoded pixel numbers. Travel is
+    read off virtual_pos.x, which accumulates the exact same accelerated
+    deltas _classify_release compares against TAP_MAX_PX / TAP2_MAX_PX.
+    Travel from a given dx does not depend on which finger initiated the
+    pinch, only on the motion, so a single search (against an index tap)
+    serves both click kinds."""
+    def travel(dx):
+        sm = StateMachine()
+        t = arm(sm)
+        sm.update(feat(t, pinch=0.2))
+        sm.update(feat(t + dt, pinch=0.2, ref=(0.5 + dx, 0.5)))
+        return sm.virtual_pos.x
+
+    lo, hi = 0.0, 1.0
+    for _ in range(iters):
+        mid = (lo + hi) / 2.0
+        if travel(mid) < target_px:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+def test_middle_pinch_tap_between_thresholds_emits_click_two():
+    """The whole point of TAP2_MAX_PX: travel that would reject an index tap
+    must still register as a middle-pinch double-click."""
+    dx = _dx_for_travel((config.TAP_MAX_PX + config.TAP2_MAX_PX) / 2.0)
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch2=0.2))
+    sm.update(feat(t + 0.05, pinch2=0.2, ref=(0.5 + dx, 0.5)))
+    out = sm.update(feat(t + 0.10, pinch2=0.9))
+    assert out == [Click(2)]
+
+
+def test_index_pinch_same_travel_emits_nothing():
+    """Same travel that a middle-pinch tolerates must still reject an index
+    tap -- this is what fails if the two thresholds get unified."""
+    dx = _dx_for_travel((config.TAP_MAX_PX + config.TAP2_MAX_PX) / 2.0)
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.05, pinch=0.2, ref=(0.5 + dx, 0.5)))
+    out = sm.update(feat(t + 0.10, pinch=0.9))
+    assert out == []
+
+
+def test_middle_pinch_tap_beyond_tap2_max_px_emits_nothing():
+    dx = _dx_for_travel(config.TAP2_MAX_PX * 2.0)
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch2=0.2))
+    sm.update(feat(t + 0.05, pinch2=0.2, ref=(0.5 + dx, 0.5)))
+    out = sm.update(feat(t + 0.10, pinch2=0.9))
+    assert out == []
+
+
 def test_both_pinches_closed_index_closer_gives_click_one():
     """Whichever finger is actually closer to the thumb at pinch-down decides."""
     sm = StateMachine()

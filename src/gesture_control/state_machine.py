@@ -76,7 +76,8 @@ class StateMachine:
 
     def _classify_release(self, f: Features) -> list[Intent]:
         held = f.t - self._pinch_t0 if self._pinch_t0 is not None else 0.0
-        if held > config.TAP_MAX_S or self._pinch_travel >= config.TAP_MAX_PX:
+        tap_max_px = config.TAP2_MAX_PX if self._click_n == 2 else config.TAP_MAX_PX
+        if held > config.TAP_MAX_S or self._pinch_travel >= tap_max_px:
             return []
         return [Click(self._click_n)]
 
