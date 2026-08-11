@@ -70,8 +70,8 @@ def extract(frame: HandFrame) -> Features:
     pinch = _dist(pts[THUMB_TIP], pts[INDEX_TIP]) / scale
     pinch2 = _dist(pts[THUMB_TIP], pts[MIDDLE_TIP]) / scale
     # Index fingertip to wrist, scale-normalized. Drives the clutch (see
-    # config.py's INDEX_CURL_CLOSE / INDEX_CURL_OPEN, PROVISIONAL): curling
-    # the index toward the palm shrinks this ratio, freezing the cursor.
+    # config.py's INDEX_CURL_CLOSE / INDEX_CURL_OPEN): curling the index
+    # toward the palm shrinks this ratio, freezing the cursor.
     index_curl = _dist(pts[WRIST], pts[INDEX_TIP]) / scale
 
     fingers = tuple(

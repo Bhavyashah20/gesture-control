@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from gesture_control import config
+from gesture_control.features import extract
 from gesture_control.recorder import read_session, replay, write_session
 from gesture_control.types import ButtonDown, ButtonUp, Click, HandFrame, Point3, Space
 
@@ -178,3 +180,41 @@ def test_five_clicks_recording_never_produces_a_click_two():
     """Same standard as live_clicks.jsonl: five genuine index clicks, zero
     Click(2)s under the closer-finger rule."""
     assert Click(2) not in _replay("five_clicks")
+
+
+# --- The clutch: INDEX_CURL_CLOSE / INDEX_CURL_OPEN calibration ---
+#
+# Calibrated against recordings/clutch.jsonl (see config.py). A pinch
+# misread as a curl would freeze the cursor mid-drag -- the worst possible
+# failure for this feature -- so this is verified against every
+# pinch-containing fixture, not just the dedicated clutch recording.
+PINCH_FIXTURES = ("five_clicks", "one_double_click", "live_clicks", "drag_a_to_b", "middle_pinch")
+
+
+def test_a_pinch_never_reads_as_a_curl():
+    """Driven by real fixture data across all five pinch-containing
+    recordings: replaying through the state machine and asserting it never
+    enters FROZEN while pressed is redundant with the enum itself (PRESSED
+    and FROZEN are mutually exclusive states, so that would hold trivially
+    regardless of calibration). The real guarantee lives one level down, at
+    the feature values: no frame where the pinch reads closed
+    (`pinch_ratio < PINCH_CLOSE`) may also read as a curl
+    (`index_curl_ratio < INDEX_CURL_CLOSE`). The lowest index_curl_ratio
+    seen during any pinch, across all five fixtures, is 1.03 -- comfortably
+    above INDEX_CURL_CLOSE.
+    """
+    for name in PINCH_FIXTURES:
+        path = f"{FIXTURES}/{name}.jsonl"
+        try:
+            frames = read_session(path)
+        except FileNotFoundError:
+            pytest.skip(f"fixture {path} not recorded yet")
+        for frame in frames:
+            f = extract(frame)
+            if f.present and f.pinch_ratio < config.PINCH_CLOSE:
+                assert f.index_curl_ratio >= config.INDEX_CURL_CLOSE, (
+                    f"{name} t={f.t:.3f}: pinch_ratio={f.pinch_ratio:.3f} "
+                    f"closed, but index_curl_ratio={f.index_curl_ratio:.3f} "
+                    f"also reads as curled -- this pinch would freeze the "
+                    f"cursor mid-drag"
+                )

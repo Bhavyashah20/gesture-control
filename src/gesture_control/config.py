@@ -45,13 +45,16 @@ HAND_SCALE_MAX = 0.45
 FINGER_EXT_RATIO = 1.15
 ARM_FINGERS_MIN = 3
 
-# PROVISIONAL - not yet calibrated against a real curl recording.
-# Measured on existing fixtures: index-tip-to-wrist ratio is ~1.71 with the
-# hand open and ~1.39 while pinching, so the curl threshold must sit below
-# 1.39 or pinching would freeze the cursor. A dedicated clutch recording is
-# being made; recalibrate against it before trusting these.
-INDEX_CURL_CLOSE = 1.15
-INDEX_CURL_OPEN = 1.30
+# Calibrated against recordings/clutch.jsonl, not estimated. That recording's
+# index_curl_ratio is cleanly bimodal: a curled cluster at 0.56-0.9 and a
+# pointing cluster at 1.6-2.04, with a wide empty gap between. 0.95 sits in
+# that gap. The upper bound is set by pinching, not by pointing: the lowest
+# ratio observed during any pinch across all fixtures is 1.03, and a pinch
+# misread as a curl would freeze the cursor mid-drag. At 0.95 all 124 genuine
+# curl frames are detected and zero pinched frames freeze; the previous
+# provisional 1.15 would have frozen 6.
+INDEX_CURL_CLOSE = 0.95
+INDEX_CURL_OPEN = 1.20
 
 BASE_GAIN_PX = 1600.0
 ACCEL_MIN = 0.35

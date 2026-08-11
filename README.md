@@ -142,11 +142,15 @@ double-click from also registering as a spurious index button-down (see
 
 `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` govern the clutch: curling the index
 finger toward the palm freezes the cursor so you can reposition your hand
-without moving it. **These are PROVISIONAL** — measured only against the
-existing recordings (index-tip-to-wrist ratio ~1.71 open, ~1.39 while
-pinching), not against a dedicated curl recording. They are calibrated only
-tightly enough to guarantee a pinch is never misread as a curl; do not treat
-them as tuned for real clutch behaviour yet.
+without moving it. These are calibrated against `recordings/clutch.jsonl`, a
+dedicated 15 s recording that alternates between pointing and curling while
+moving the hand throughout. Its `index_curl_ratio` distribution is cleanly
+bimodal — curled at 0.56-0.9, pointing at 1.6-2.04, with a wide empty gap
+between — and `INDEX_CURL_CLOSE = 0.95` sits in that gap. The upper bound is
+set by pinching, not pointing: `index_curl_ratio` runs 1.03-1.39 while
+genuinely pinching (see `PINCH_CLOSE`/`PINCH2_CLOSE` above), and a pinch
+misread as a curl would freeze the cursor mid-drag, so `INDEX_CURL_OPEN =
+1.20` stays below the pointing cluster while never touching the pinch floor.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v
@@ -177,3 +181,10 @@ above gets a chance to run.
   system's `com.apple.swipescrolldirection` preference. If you have natural
   scrolling turned off, scroll will feel inverted; negate `SCROLL_GAIN` in
   `config.py` as a workaround
+- `recordings/clutch.jsonl` (point/curl only, no pinching) replays to one
+  spurious `Click(2)` and one spurious `ButtonDown` that never releases —
+  both from `pinch_ratio`/`pinch2_ratio` transiently crossing their CLOSE
+  thresholds during ordinary curl motion, not from anything in the curl
+  calibration. `PINCH_CLOSE`/`PINCH2_CLOSE` were never calibrated against
+  sustained curling; this recording is the first to exercise it. Needs its
+  own investigation before being trusted

@@ -203,9 +203,8 @@ independent pinch channel, not a derivative of `pinch_ratio`.
 **`index_curl_ratio`** = ‖landmark[8] − landmark[0]‖ / `hand_scale`, index
 fingertip to wrist. Drives the clutch (see "The clutch: freezing the
 cursor" below): curling the index finger toward the palm shrinks this
-ratio. **PROVISIONAL** — see "Tuning parameters" for why the current
-`INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` thresholds are not yet trustworthy
-beyond "a pinch is not a curl."
+ratio. `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` are calibrated against a
+dedicated recording — see "Tuning parameters" for the numbers.
 
 **`fingers_up[f]`** = ‖tip − wrist‖ > 1.15 × ‖pip − wrist‖ for each of index,
 middle, ring, pinky. Comparing distances from the wrist rather than comparing y
@@ -400,16 +399,18 @@ of "wrong action" design principle 1 rules out. This is deliberately
 independent of the freeze/track transitions above, which only apply from
 `Tracking` and `Frozen`.
 
-`index_curl_ratio` thresholds are **PROVISIONAL**. They are calibrated only
-against the existing recordings, incidentally, by measuring how the ratio
-behaves during ordinary pinching (median 1.39) versus an open hand (median
-1.71) — not against any recording of a deliberate curl gesture, because none
-existed yet. The only property actually verified is that a pinch is never
-misread as a curl (`INDEX_CURL_CLOSE = 1.15` sits comfortably below the 1.39
-pinching floor). Whether 1.15 / 1.30 are the right thresholds for a
-*deliberate* curl-to-freeze gesture is unverified and must be recalibrated
-against a dedicated recording before this is trusted in daily use. See
-"Tuning parameters" below.
+`index_curl_ratio` thresholds are calibrated against
+`recordings/clutch.jsonl`, a dedicated 15 s recording that alternates
+between pointing and curling while moving the hand throughout. Its
+`index_curl_ratio` distribution is cleanly bimodal — a curled cluster at
+0.56-0.9 (124 frames) and a pointing cluster at 1.6-2.04 (313 frames), with
+a wide, nearly empty gap between — so `INDEX_CURL_CLOSE = 0.95` sits in that
+gap, detecting every curled frame. The upper bound is still set by pinching,
+not pointing: the lowest `index_curl_ratio` observed during any pinch,
+across all five pinch-containing fixtures, is 1.03, so `INDEX_CURL_OPEN =
+1.20` stays below the pointing cluster (for prompt uncurl detection) while
+never approaching the pinch floor (so a pinch is never misread as a curl).
+See "Tuning parameters" below.
 
 ### Hysteresis
 
@@ -417,7 +418,7 @@ Every threshold with a boundary gets two values, never one:
 
 - index pinch closes at 0.35, reopens at 0.45
 - middle pinch (double-click) closes at 0.30, reopens at 0.40
-- index curl closes at 1.15, reopens at 1.30 (PROVISIONAL — see above)
+- index curl closes at 0.95, reopens at 1.20
 - gate arms in 300 ms, disarms in 500 ms
 - scroll posture engages in 200 ms, releases immediately
 
@@ -620,16 +621,16 @@ simplification made at the cost of losing that calibration work.
 
 `PINCH_CLOSE` / `PINCH_OPEN` and `PINCH2_CLOSE` / `PINCH2_OPEN` are
 unchanged and still calibrated against the same real recordings described
-below their original entries. `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` are new
-and **PROVISIONAL** — see "The clutch: freezing the cursor" above for what
-is and is not verified about them. All other parameters (gate, gain, scroll,
-swipe, filter) are unchanged by this redesign.
+below their original entries. `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` are
+calibrated against a dedicated recording, `recordings/clutch.jsonl` — see
+"The clutch: freezing the cursor" above. All other parameters (gate, gain,
+scroll, swipe, filter) are unchanged by this redesign.
 
 | Parameter | Start | Governs |
 |---|---|---|
 | `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | index pinch detection (button down/up), with hysteresis |
 | `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
-| `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` | 1.15 / 1.30 | **PROVISIONAL.** Clutch (freeze/resume) detection, with hysteresis. Measured only against existing recordings, not a dedicated curl recording: index-tip-to-wrist ratio runs ~1.39 while pinching and ~1.71 with the hand open, so the CLOSE threshold sits below the pinching floor to guarantee a pinch is never misread as a curl. Whether these are right for a deliberate curl gesture is unverified; recalibrate against a real clutch recording before trusting them |
+| `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` | 0.95 / 1.20 | Clutch (freeze/resume) detection, with hysteresis. Calibrated against `recordings/clutch.jsonl`: `index_curl_ratio` is cleanly bimodal (curled 0.56-0.9, pointing 1.6-2.04), and 0.95 sits in the wide gap between. The upper bound is set by the pinch floor (1.03, across all pinch-containing fixtures), not by pointing, so a pinch is never misread as a curl |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `BASE_GAIN_PX` | 1600 | cursor travel per hand movement |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.35 / 2.5 | precision floor vs. reach ceiling |

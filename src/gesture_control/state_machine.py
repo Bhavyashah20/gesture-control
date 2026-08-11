@@ -83,8 +83,8 @@ class StateMachine:
     def _update_curl(f: Features, curled: bool) -> bool:
         """Hysteresis step for the index-curl clutch signal.
 
-        PROVISIONAL thresholds -- see config.py's INDEX_CURL_CLOSE /
-        INDEX_CURL_OPEN comment.
+        Thresholds calibrated against recordings/clutch.jsonl -- see
+        config.py's INDEX_CURL_CLOSE / INDEX_CURL_OPEN comment.
         """
         if curled:
             if f.index_curl_ratio > config.INDEX_CURL_OPEN:

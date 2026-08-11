@@ -196,10 +196,11 @@ def test_pressed_emits_moves_then_one_button_up():
 
 
 def test_pinching_does_not_read_as_curl_at_calibrated_values():
-    """PROVISIONAL calibration data point (see config.py): index_curl_ratio
-    measures ~1.39 while genuinely pinching, well above INDEX_CURL_CLOSE
-    (1.15), so a pinch must never be misread as a curl -- that would freeze
-    the cursor mid-drag instead of pressing the button."""
+    """Calibration data point (see config.py): index_curl_ratio measures up
+    to 1.39 while genuinely pinching -- comfortably above INDEX_CURL_CLOSE
+    (0.95, calibrated against recordings/clutch.jsonl), so a pinch must
+    never be misread as a curl -- that would freeze the cursor mid-drag
+    instead of pressing the button."""
     sm = StateMachine()
     t = arm(sm)
     out = sm.update(feat(t, pinch=0.2, curl=1.39))
@@ -226,12 +227,19 @@ def test_hand_vanishing_while_pressed_releases_the_button():
 
 
 # --- The clutch: curling the index finger freezes the cursor ---
+#
+# Curl values below are derived from the calibrated config constants, not
+# hardcoded to a specific calibration, so they stay correct across any
+# future recalibration:
+CURLED = config.INDEX_CURL_CLOSE - 0.05  # below CLOSE: a genuine curl
+BETWEEN = (config.INDEX_CURL_CLOSE + config.INDEX_CURL_OPEN) / 2  # hysteresis band
+UNCURLED = config.INDEX_CURL_OPEN + 0.05  # above OPEN: a genuine point
 
 
 def test_curling_the_index_freezes_the_cursor():
     sm = StateMachine()
     t = arm(sm)
-    out = sm.update(feat(t, curl=1.10, ref=(0.9, 0.9)))
+    out = sm.update(feat(t, curl=CURLED, ref=(0.9, 0.9)))
     assert out == []
     assert sm.state is State.FROZEN
 
@@ -239,9 +247,9 @@ def test_curling_the_index_freezes_the_cursor():
 def test_frozen_emits_nothing_even_as_the_hand_keeps_moving():
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, curl=1.10, ref=(0.9, 0.9)))
+    sm.update(feat(t, curl=CURLED, ref=(0.9, 0.9)))
     assert sm.state is State.FROZEN
-    out = sm.update(feat(t + 0.05, curl=1.10, ref=(0.1, 0.1)))
+    out = sm.update(feat(t + 0.05, curl=CURLED, ref=(0.1, 0.1)))
     assert out == []
     assert sm.state is State.FROZEN
 
@@ -249,9 +257,9 @@ def test_frozen_emits_nothing_even_as_the_hand_keeps_moving():
 def test_uncurling_resumes_tracking():
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, curl=1.10))
+    sm.update(feat(t, curl=CURLED))
     assert sm.state is State.FROZEN
-    sm.update(feat(t + 0.05, curl=1.71))
+    sm.update(feat(t + 0.05, curl=UNCURLED))
     assert sm.state is State.TRACKING
 
 
@@ -261,13 +269,13 @@ def test_uncurling_does_not_jump_the_cursor():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, ref=(0.5, 0.5)))
-    sm.update(feat(t + 0.05, curl=1.10, ref=(0.5, 0.5)))
+    sm.update(feat(t + 0.05, curl=CURLED, ref=(0.5, 0.5)))
     assert sm.state is State.FROZEN
     # Reposition the physical hand far away while frozen.
-    sm.update(feat(t + 0.10, curl=1.10, ref=(0.9, 0.9)))
+    sm.update(feat(t + 0.10, curl=CURLED, ref=(0.9, 0.9)))
     # Uncurl at the new position: resuming tracking here must not replay
     # the (0.5,0.5) -> (0.9,0.9) jump as a Move.
-    out = sm.update(feat(t + 0.15, curl=1.71, ref=(0.9, 0.9)))
+    out = sm.update(feat(t + 0.15, curl=UNCURLED, ref=(0.9, 0.9)))
     moves = [i for i in out if isinstance(i, Move)]
     assert moves == []
     assert sm.state is State.TRACKING
@@ -276,11 +284,11 @@ def test_uncurling_does_not_jump_the_cursor():
 def test_curl_uses_hysteresis():
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, curl=1.10))
+    sm.update(feat(t, curl=CURLED))
     assert sm.state is State.FROZEN
-    sm.update(feat(t + 0.05, curl=1.20))  # between CLOSE and OPEN
+    sm.update(feat(t + 0.05, curl=BETWEEN))  # between CLOSE and OPEN
     assert sm.state is State.FROZEN
-    sm.update(feat(t + 0.10, curl=1.35))  # above OPEN
+    sm.update(feat(t + 0.10, curl=UNCURLED))  # above OPEN
     assert sm.state is State.TRACKING
 
 
@@ -292,7 +300,7 @@ def test_curling_while_pressed_does_not_release_the_button():
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
     assert sm.state is State.PRESSED
-    out = sm.update(feat(t + 0.05, pinch=0.2, curl=1.10, ref=(0.6, 0.5)))
+    out = sm.update(feat(t + 0.05, pinch=0.2, curl=CURLED, ref=(0.6, 0.5)))
     assert not any(isinstance(i, ButtonUp) for i in out)
     assert sm.state is State.PRESSED
     assert any(isinstance(i, Move) for i in out)
@@ -302,10 +310,32 @@ def test_curling_while_pressed_then_releasing_still_emits_button_up():
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, pinch=0.2))
-    sm.update(feat(t + 0.05, pinch=0.2, curl=1.10))
+    sm.update(feat(t + 0.05, pinch=0.2, curl=CURLED))
     assert sm.state is State.PRESSED
-    out = sm.update(feat(t + 0.10, pinch=0.9, curl=1.10))
+    out = sm.update(feat(t + 0.10, pinch=0.9, curl=CURLED))
     assert out == [ButtonUp()]
+
+
+def test_releasing_an_ordinary_pinch_never_leaves_the_cursor_frozen():
+    """Traces the hysteresis-band concern raised while calibrating
+    INDEX_CURL_CLOSE/OPEN: a genuine pinch measures index_curl_ratio in the
+    1.03-1.39 range (see config.py) -- below INDEX_CURL_OPEN but above
+    INDEX_CURL_CLOSE, i.e. inside the hysteresis band, for its entire
+    duration. `curl=BETWEEN` here stands in for that band. Because curled
+    only latches True below CLOSE, and this ratio never goes that low, the
+    clutch's `curled` flag stays False throughout the press and release, so
+    TRACKING (never FROZEN) is what follows the ButtonUp. Confirmed against
+    real data too: the lowest index_curl_ratio recorded during any pinch,
+    across all five pinch-containing fixtures, is 1.03 -- above CLOSE
+    (0.95) -- so this is not just a synthetic case.
+    """
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2, curl=BETWEEN))
+    assert sm.state is State.PRESSED
+    out = sm.update(feat(t + 0.05, pinch=0.9, curl=BETWEEN))
+    assert out == [ButtonUp()]
+    assert sm.state is State.TRACKING
 
 
 # --- Scroll (unchanged behaviour, new resting-state name) ---
