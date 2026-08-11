@@ -34,6 +34,17 @@ def _dist(a: Point3, b: Point3) -> float:
 
 
 def _palm_facing(pts: tuple[Point3, ...], handedness: str) -> bool:
+    """Correctness here depends on two compensating inversions.
+
+    MediaPipe reports handedness as if the input image were mirrored (as a
+    selfie-view camera app would show it), but we feed it the raw, un-mirrored
+    camera frame. That mismatch is exactly what cancels the mirror-induced
+    sign flip in the cross product below. Do not "fix" this by adding a
+    cv2.flip for a preview window without also flipping the sign convention
+    here: doing so silently inverts palm_facing for one handedness, the gate
+    never arms, and no test catches it because none renders a mirrored
+    preview.
+    """
     wrist = pts[WRIST]
     v1x, v1y = pts[INDEX_MCP].x - wrist.x, pts[INDEX_MCP].y - wrist.y
     v2x, v2y = pts[PINKY_MCP].x - wrist.x, pts[PINKY_MCP].y - wrist.y

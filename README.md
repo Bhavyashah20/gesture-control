@@ -80,8 +80,11 @@ Record a new fixture with `--record`:
 ## If the mouse button gets stuck
 
 A hard crash during a drag can leave macOS with the left button held. Click once
-anywhere to release it. The watchdog, exit handlers, and `Esc` cover every other
-case.
+anywhere to release it. The watchdog, exit handlers, and a pipeline-error
+callback cover the ordinary failure modes (camera stalls, a bad frame, an
+uncaught exception). `Esc` is the backstop for anything else. A hard `SIGKILL`
+is the one case nothing can cover — the process is gone before any of the
+above gets a chance to run.
 
 ## Known limitations
 
@@ -89,3 +92,7 @@ case.
 - Detection degrades in dim or strongly backlit rooms
 - Sustained use is tiring; the clutch lets your hand rest between movements
 - Primary display only
+- Scroll direction is fixed to natural scrolling and does not read the
+  system's `com.apple.swipescrolldirection` preference. If you have natural
+  scrolling turned off, scroll will feel inverted; negate `SCROLL_GAIN` in
+  `config.py` as a workaround

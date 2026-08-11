@@ -35,9 +35,15 @@ def state_label(state: State, present: bool) -> str:
 class Hud:
     """Always-on-top state pill that also drives the pipeline via after()."""
 
-    def __init__(self, on_tick: Callable[[], None], tick_ms: int = 10) -> None:
+    def __init__(
+        self,
+        on_tick: Callable[[], None],
+        tick_ms: int = 10,
+        on_error: Callable[[], None] | None = None,
+    ) -> None:
         self._on_tick = on_tick
         self._tick_ms = tick_ms
+        self._on_error = on_error
         self._running = False
 
         self._root = tk.Tk()
@@ -75,6 +81,11 @@ class Hud:
             self._on_tick()
         except Exception:
             traceback.print_exc()
+            if self._on_error is not None:
+                try:
+                    self._on_error()
+                except Exception:
+                    traceback.print_exc()
             self._fail("pipeline error, see terminal")
             return
         if self._running:

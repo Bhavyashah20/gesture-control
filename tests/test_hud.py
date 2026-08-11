@@ -41,11 +41,12 @@ class _FakeRoot:
         self.scheduled.append((ms, fn))
 
 
-def _bare_hud(on_tick):
+def _bare_hud(on_tick, on_error=None):
     """A Hud with its Tk plumbing faked out, so these run without a display."""
     h = Hud.__new__(Hud)
     h._on_tick = on_tick
     h._tick_ms = 10
+    h._on_error = on_error
     h._running = True
     h._root = _FakeRoot()
     h._label = _FakeLabel()
@@ -86,3 +87,22 @@ def test_on_tick_exception_stops_the_loop_and_shows_the_error():
     assert h._running is False
     assert h._root.scheduled == []
     assert "error" in h._label.cfg["text"]
+
+
+def test_on_error_callback_fires_when_on_tick_raises():
+    """A pipeline exception must not leave a button held with no release path.
+
+    _fail() deliberately keeps the window open (so the user can see what
+    happened), which means mainloop() never returns and the caller's
+    `finally: shutdown()` never runs. on_error is the only remaining path
+    back to actuator.release_all() short of the user pressing Esc.
+    """
+    calls = []
+
+    def boom():
+        raise RuntimeError("pipeline exploded")
+
+    h = _bare_hud(boom, on_error=lambda: calls.append(1))
+    h._tick()
+    assert calls == [1]
+    assert h._running is False

@@ -44,3 +44,22 @@ def test_all_intent_types_are_handled():
     a.apply([Move(0, 0), Click(1), DragStart(), Move(1, 1), DragEnd(),
              Scroll(5.0), Space("right"), Space("left")])
     assert len(a.log) == 8
+
+
+def test_sink_receives_an_entry_per_intent():
+    """--dry-run's only user-visible feedback: without this, threshold tuning
+    can't tell Click(1) from Click(2) from a rejected tap."""
+    received = []
+    a = DryRunActuator(sink=received.append)
+    a.apply([Move(1.0, 2.0), Click(1), Click(2)])
+    assert received == a.log
+    assert len(received) == 3
+
+
+def test_log_is_capped_and_stays_list_like():
+    a = DryRunActuator()
+    for _ in range(1500):
+        a.apply([Click(1)])
+    assert len(a.log) == 1000
+    assert isinstance(a.log, list)
+    assert a.log == list(a.log)  # still comparable/iterable like a plain list

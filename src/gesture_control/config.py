@@ -36,6 +36,12 @@ SWIPE_WINDOW_S = 0.350
 SWIPE_COOLDOWN_S = 0.800
 
 EURO_MIN_CUTOFF = 1.0
+# Deliberately 0.7, NOT the canonical One Euro paper value of 0.007. That
+# constant is calibrated for pixel-scale coordinates; this project feeds the
+# filter normalized [0,1] landmark coordinates, where speeds are three orders
+# of magnitude smaller. At 0.007 the adaptive term stays inert across the
+# whole range of real hand motion, degenerating the filter to a fixed 1 Hz
+# low-pass, which also blunts the velocity swipes need to fire.
 EURO_BETA = 0.7
 EURO_D_CUTOFF = 1.0
 

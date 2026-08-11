@@ -1,40 +1,58 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from .types import Click, DragEnd, DragStart, Intent, Move, Scroll, Space
 
 KEY_LEFT_ARROW = 123
 KEY_RIGHT_ARROW = 124
 
+# How many entries `log` retains. Unbounded growth is the bug: at ~30
+# ticks/second a dry-run session left running overnight would otherwise
+# grow `log` without limit.
+LOG_MAXLEN = 1000
+
 
 class DryRunActuator:
     """Logs what would happen. Used by --dry-run and by the unit tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, sink: Callable[[str], None] | None = None) -> None:
+        # Deliberately a plain list, not collections.deque(maxlen=...): the
+        # existing tests compare `log` to a list literal (`a.log == []`),
+        # which deque never equals. Capped by hand in _emit instead.
         self.log: list[str] = []
         self.button_down = False
+        self._sink = sink
+
+    def _emit(self, entry: str) -> None:
+        self.log.append(entry)
+        if len(self.log) > LOG_MAXLEN:
+            del self.log[0]
+        if self._sink is not None:
+            self._sink(entry)
 
     def apply(self, intents: list[Intent]) -> None:
         for i in intents:
             match i:
                 case Move(dx, dy):
-                    self.log.append(f"move {dx:.1f} {dy:.1f}")
+                    self._emit(f"move {dx:.1f} {dy:.1f}")
                 case Click(n):
-                    self.log.append(f"click x{n}")
+                    self._emit(f"click x{n}")
                 case DragStart():
                     self.button_down = True
-                    self.log.append("drag-start")
+                    self._emit("drag-start")
                 case DragEnd():
                     self.button_down = False
-                    self.log.append("drag-end")
+                    self._emit("drag-end")
                 case Scroll(dy):
-                    self.log.append(f"scroll {dy:.1f}")
+                    self._emit(f"scroll {dy:.1f}")
                 case Space(d):
-                    self.log.append(f"space {d}")
+                    self._emit(f"space {d}")
 
     def release_all(self) -> None:
         if self.button_down:
             self.button_down = False
-            self.log.append("release-all")
+            self._emit("release-all")
 
 
 def accessibility_granted() -> bool:
@@ -115,9 +133,14 @@ class QuartzActuator:
                     self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=n)
                     self._post_mouse(self._q.kCGEventLeftMouseUp, x, y, clicks=n)
                 case DragStart():
+                    # Set the flag before posting, not after: a signal landing
+                    # mid-sequence then leaves release_all() believing the
+                    # button IS held (a spurious LeftMouseUp is a harmless
+                    # no-op), instead of leaving a genuinely-held button with
+                    # no record that it needs releasing.
                     x, y = self._cursor()
-                    self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=1)
                     self.button_down = True
+                    self._post_mouse(self._q.kCGEventLeftMouseDown, x, y, clicks=1)
                 case DragEnd():
                     x, y = self._cursor()
                     self._post_mouse(self._q.kCGEventLeftMouseUp, x, y, clicks=1)
