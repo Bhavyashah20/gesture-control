@@ -19,7 +19,7 @@ like picking up a file and moving your hand.
 | Move while pinched | Drag |
 | Release the pinch | Release the mouse button |
 | Pinch (middle finger) | Double-click |
-| Index and middle extended, ring curled, thumb tucked to the palm, move vertically | Scroll |
+| Index and middle extended, ring curled, thumb tucked to the palm, then hold your hand above or below where you started the gesture | Scroll |
 | Open palm, sweep sideways | Previous or next fullscreen Space |
 | `Esc` | Stop immediately |
 
@@ -56,6 +56,30 @@ acceleration curve (`scroll_accel`, mirroring the cursor's `accel` but with
 its own constants — see "Tuning" below), so slow hand movement gives fine
 control, fast movement gives reach, and tremor near the resting speed
 collapses to below the scroll deadband instead of drifting the page.
+
+**Scroll is rate-based, not displacement-based (2026-08-20 redesign).** The
+scroll amount used to follow how far the hand physically moved, the same way
+the cursor does: `scroll_px = dy × SCROLL_GAIN × scroll_accel(speed)`. That
+model had a hard failure the user reported directly: when their hand reached
+the top or bottom of its comfortable range, there was nowhere left to move,
+so scrolling simply stopped, stranding them mid-page. Measured from
+`recordings/scroll_attempt.jsonl`, the usable vertical span during the scroll
+gesture is only 0.22 of frame height — enough for roughly 4400 px of
+displacement scroll in one stroke and no more, regardless of gain.
+
+Scroll now works like a joystick. Entering `Scroll` records the hand's
+current vertical position as a `neutral` point. Each frame, `offset` is the
+hand's current position relative to that neutral, not a frame-to-frame
+delta. Inside `SCROLL_NEUTRAL_DEADZONE` nothing happens, which is what lets
+you stop scrolling by returning to centre. Outside it, `offset` sets a
+continuous scroll *speed* — `sign(offset) × (|offset| − SCROLL_NEUTRAL_DEADZONE)
+× SCROLL_RATE_GAIN` px/sec — so holding your hand off-centre keeps the page
+scrolling for as long as you hold it, and the per-frame scroll amount is that
+speed times the frame's `dt`. Hand range stops mattering: you hold a position
+instead of sweeping through one, so you can never run out of room. `SCROLL_GAIN`
+and the `scroll_accel` curve (2026-08-19, above) existed only to shape
+displacement-based scrolling and are removed along with it — see "Tuning"
+below for the replacement constants.
 
 Curling and pinching are mutually exclusive, on purpose: curling your index
 finger toward your palm brings the fingertip onto the thumb, which reads as
@@ -323,21 +347,23 @@ more tremor rejection for coarser slow-movement steps; lowering it does the
 opposite. It applies identically whether you're just moving the cursor or
 dragging.
 
-Scroll has its own acceleration curve (2026-08-19), the same shape as the
-cursor's but with its own constants — scroll hand speed runs roughly an order
-of magnitude slower than cursor hand speed, so the cursor's `ACCEL_VREF`
-would be the wrong scale for it. `SCROLL_GAIN` sets overall scroll speed —
-this is the constant you are most likely to want to adjust if scrolling
-feels too fast or too slow across the board. `SCROLL_ACCEL_VREF` controls how
-sharply that speed ramps up as your hand moves faster — lower it to reach
-full speed with less hand motion, raise it to require a more deliberate
-flick before scroll speeds up. `SCROLL_ACCEL_MIN` sets the floor a bare-still
-hand still scrolls at (kept low so tremor near-collapses to nothing rather
-than drifting the page), and `SCROLL_ACCEL_MAX` caps how much a fast flick
-can be amplified. If you change other constants and scroll stops working,
-replay `recordings/scroll_attempt.jsonl` and check the total pixel output
-before retuning — the original "scroll does nothing" report turned out to be
-pure magnitude, not a posture or timing bug, so check magnitude first.
+Scroll is rate-based (2026-08-20), not displacement-based — see "Scroll is
+rate-based, not displacement-based" above for why. `SCROLL_NEUTRAL_DEADZONE`
+sets how far your hand must move from the neutral point (recorded when you
+enter `Scroll`) before scrolling starts at all — inside it you are
+considered "centred" and nothing scrolls, which is both how you stop
+scrolling and what absorbs hand tremor while holding still. `SCROLL_RATE_GAIN`
+converts the remaining offset into a scroll speed in px/sec — this is the
+constant you are most likely to want to adjust if scrolling feels too fast
+or too slow across the board. Both were sized from `recordings/scroll_attempt.jsonl`,
+where the usable vertical span during the scroll gesture is 0.22 of frame
+height, so a comfortable maximum deflection is roughly 0.11 either side of
+neutral: at `SCROLL_NEUTRAL_DEADZONE = 0.02` and `SCROLL_RATE_GAIN = 30000`,
+a 0.05 offset scrolls at roughly 900 px/sec, 0.10 at roughly 2400 px/sec, and
+0.15 (beyond the comfortable range) at roughly 3900 px/sec. If you change
+other constants and scroll stops working, replay
+`recordings/scroll_attempt.jsonl` and check the event count and total pixel
+output before retuning.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v
@@ -366,8 +392,8 @@ above gets a chance to run.
 - Primary display only
 - Scroll direction is fixed to natural scrolling and does not read the
   system's `com.apple.swipescrolldirection` preference. If you have natural
-  scrolling turned off, scroll will feel inverted; negate `SCROLL_GAIN` in
-  `config.py` as a workaround
+  scrolling turned off, scroll will feel inverted; negate `SCROLL_RATE_GAIN`
+  in `config.py` as a workaround
 - If a right-click ever appears (this app posts no right-clicks of its own),
   it indicates a modifier-flag leak: `_key` posts Control-flagged key events
   for the Space switch gesture, and on macOS a plain left mouse-down created

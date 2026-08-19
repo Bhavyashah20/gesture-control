@@ -1,7 +1,7 @@
 import math
 
 from gesture_control import config
-from gesture_control.filters import OneEuroFilter, Point2Filter, accel, apply_gain, scroll_accel
+from gesture_control.filters import OneEuroFilter, Point2Filter, accel, apply_gain
 from gesture_control.types import Point2
 
 
@@ -97,16 +97,10 @@ def test_zero_dt_does_not_divide_by_zero():
     assert dy == 0.0
 
 
-def test_scroll_accel_config_bounds_are_consistent():
-    assert config.SCROLL_ACCEL_MIN < config.SCROLL_ACCEL_MAX
-
-
-def test_scroll_accel_is_clamped_at_both_ends():
-    assert scroll_accel(0.0) == config.SCROLL_ACCEL_MIN
-    assert scroll_accel(1e6) == config.SCROLL_ACCEL_MAX
-
-
-def test_scroll_accel_is_monotonic():
-    speeds = [0.0, 0.001, 0.01, 0.04, 0.11, 1.0]
-    values = [scroll_accel(s) for s in speeds]
-    assert values == sorted(values)
+def test_scroll_rate_gain_config_is_positive():
+    """SCROLL_RATE_GAIN and SCROLL_NEUTRAL_DEADZONE must both be positive
+    for rate-based scrolling (see config.py) to behave sensibly: a
+    non-positive deadzone would scroll even while centred, and a
+    non-positive gain would produce zero or backwards speed."""
+    assert config.SCROLL_NEUTRAL_DEADZONE > 0.0
+    assert config.SCROLL_RATE_GAIN > 0.0

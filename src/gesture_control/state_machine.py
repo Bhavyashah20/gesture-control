@@ -5,7 +5,7 @@ from collections import deque
 from enum import Enum, auto
 
 from . import config
-from .filters import Point2Filter, apply_gain, scroll_accel
+from .filters import Point2Filter, apply_gain
 from .gate import Gate
 from .types import ButtonDown, ButtonUp, Click, Features, Intent, Move, Point2, Scroll, Space
 
@@ -83,6 +83,12 @@ class StateMachine:
         self._curled = False
         self._virtual = Point2(0.0, 0.0)
         self._scroll_since: float | None = None
+        # Rate-scroll neutral: the vertical hand position recorded on
+        # entering SCROLL. Re-recorded every entry (see config.py's
+        # SCROLL_NEUTRAL_DEADZONE comment) so re-entering after
+        # repositioning never inherits a stale neutral from a previous
+        # visit to SCROLL.
+        self._scroll_neutral: float | None = None
         self._swipe_hist: deque[tuple[float, float]] = deque()
         self._swipe_last: float | None = None
         # Jitter accumulator (see config.py's MOVE_DEADZONE_PX comment):
@@ -104,6 +110,7 @@ class StateMachine:
         self._curled = False
         self._ref = None
         self._t = None
+        self._scroll_neutral = None
         self._reset_move_residual()
 
     def _reset_move_residual(self) -> None:
@@ -260,11 +267,23 @@ class StateMachine:
         if self._state is State.SCROLL:
             if not _can_stay_in_scroll(f):
                 self._state = State.TRACKING
+                self._scroll_neutral = None
                 return intents
-            speed = abs(dyn) / dt if dt > 0.0 else 0.0
-            px = dyn * config.SCROLL_GAIN * scroll_accel(speed)
-            if abs(px) >= config.SCROLL_MIN_PX:
-                intents.append(Scroll(px))
+            # Rate-based scroll (see config.py's SCROLL_NEUTRAL_DEADZONE
+            # comment): offset is the hand's current vertical position
+            # relative to the neutral point recorded on entry, not a
+            # frame-to-frame delta -- this is what lets a held offset keep
+            # scrolling every frame with no further hand movement at all,
+            # and what makes hand range irrelevant (the user holds a
+            # position instead of sweeping through one).
+            assert self._scroll_neutral is not None
+            offset = ref.y - self._scroll_neutral
+            if abs(offset) > config.SCROLL_NEUTRAL_DEADZONE:
+                magnitude = abs(offset) - config.SCROLL_NEUTRAL_DEADZONE
+                speed = math.copysign(magnitude, offset) * config.SCROLL_RATE_GAIN
+                px = speed * dt
+                if abs(px) >= config.SCROLL_MIN_PX:
+                    intents.append(Scroll(px))
             return intents
 
         if self._state is State.PRESSED:
@@ -315,6 +334,7 @@ class StateMachine:
             elif f.t - self._scroll_since >= config.SCROLL_DWELL_S:
                 self._state = State.SCROLL
                 self._scroll_since = None
+                self._scroll_neutral = ref.y
             return intents
 
         self._scroll_since = None

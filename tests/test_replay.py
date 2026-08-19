@@ -149,28 +149,34 @@ def test_one_sweep_yields_exactly_one_space():
 
 
 def test_scroll_attempt_produces_a_meaningful_amount_of_scroll():
-    """Regression test for the SCROLL_GAIN magnitude bug (see config.py):
-    the user reported "scroll does nothing." recordings/scroll_attempt.jsonl
-    is a 15 s deliberate scroll gesture where the posture detection and
-    state machine were already fine (53 Scroll intents fired even at the
-    old, too-weak gain) -- the bug was purely that the total distance those
-    intents added up to was imperceptible (220 px total, median event 2.4
-    px, at the pre-fix SCROLL_GAIN=900).
+    """recordings/scroll_attempt.jsonl was recorded as a sweeping motion,
+    for the old displacement model (see the previous version of this test's
+    docstring in git history) -- scroll distance followed how far the hand
+    physically moved. Rate-based scrolling (2026-08-20 redesign) reads
+    completely differently: offset is measured from a single neutral point
+    recorded once when SCROLL is entered, so a Scroll event only fires
+    while the hand is held away from that neutral, not on every frame of
+    vertical motion. A sweep that keeps passing back near neutral -- which
+    is exactly what this recording is -- produces fewer, larger events
+    concentrated at the sweep's peaks, not a near-continuous stream of
+    small ones the way it did under displacement.
 
-    This does not pin an exact pixel total -- that would just re-encode
-    SCROLL_GAIN as a second magic number here and break on every future
-    retune -- it pins the property the bug violated: a deliberate 15 s
-    scroll gesture must add up to a scroll amount an order of magnitude
-    larger than "does nothing", not merely nonzero.
+    Measured after the redesign: 22 Scroll events across 7 separate SCROLL
+    entries, totalling ~2097 px over the 15 s recording (155 of its frames
+    are spent in SCROLL; scroll fires on about a third of the recording's
+    duration). This does not try to reproduce the old pixel total -- that
+    would just re-encode SCROLL_RATE_GAIN as a second magic number here,
+    and this recording was never re-taken as a deliberate rate-model
+    gesture (hold-and-release, not sweep) -- it pins the property that
+    still matters: a 15 s deliberate scroll session produces multiple real
+    Scroll events adding up to a meaningful amount, comfortably under the
+    measured figures so ordinary retuning doesn't break it.
     """
     out = _replay("scroll_attempt")
     scrolls = [i for i in out if isinstance(i, Scroll)]
-    assert len(scrolls) >= 30  # comfortably more than a couple of stray events
+    assert len(scrolls) >= 10
     total = sum(abs(s.dy) for s in scrolls)
-    # A 900 px window's full height is the smallest amount that could
-    # plausibly read as "scroll happened" rather than "scroll did nothing" --
-    # the pre-fix total (220 px) sits well under it.
-    assert total > 900.0
+    assert total > 500.0
 
 
 def test_middle_pinch_recording_yields_click_two_and_still_proves_disambiguation():

@@ -625,46 +625,128 @@ def test_scroll_ignores_horizontal_motion():
     assert not any(isinstance(i, Scroll) for i in out)
 
 
-def _scroll_at_constant_speed(speed, distance, fps=30.0):
-    """Drive the SCROLL state at a constant vertical hand speed (frame-heights
-    per second) until `distance` frame-heights have been covered. Returns the
-    total absolute Scroll output over that run. Multiple frames (rather than
-    one big jump) let the One Euro filter reach steady state, so the result
-    reflects the acceleration curve rather than filter startup transients.
+def _enter_scroll(sm, t):
+    """Drive the machine into SCROLL with the hand held at ref=(0.5, 0.5),
+    which becomes the recorded neutral. Returns the timestamp of the entry
+    frame."""
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.25, fingers=TWO))
+    assert sm.state is State.SCROLL
+    return t + 0.25
+
+
+def _hold_offset(sm, t_start, offset, frames=20, fps=30.0):
+    """Hold the hand at a fixed vertical offset from neutral (0.5 + offset)
+    for `frames` frames with no further movement between them. Returns the
+    list of Scroll intents seen on each frame (empty list for frames with
+    no Scroll)."""
+    dt = 1.0 / fps
+    t_now = t_start
+    per_frame: list[list[Scroll]] = []
+    for _ in range(frames):
+        t_now += dt
+        out = sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.5 + offset)))
+        per_frame.append([i for i in out if isinstance(i, Scroll)])
+    return per_frame
+
+
+def test_holding_at_neutral_produces_no_scroll():
+    sm = StateMachine()
+    t = arm(sm)
+    t_scroll = _enter_scroll(sm, t)
+    per_frame = _hold_offset(sm, t_scroll, 0.0)
+    assert all(scrolls == [] for scrolls in per_frame)
+
+
+def test_offset_within_deadzone_produces_nothing():
+    sm = StateMachine()
+    t = arm(sm)
+    t_scroll = _enter_scroll(sm, t)
+    inside = config.SCROLL_NEUTRAL_DEADZONE * 0.5
+    per_frame = _hold_offset(sm, t_scroll, inside)
+    assert all(scrolls == [] for scrolls in per_frame)
+
+
+def test_sustained_offset_scrolls_repeatedly_with_no_further_hand_movement():
+    """The property that fixes the reported problem: once the hand holds a
+    fixed offset from neutral, scroll keeps firing purely from the passage
+    of time (dt), with no further hand movement after the initial offset --
+    unlike the old displacement model, where a still hand produced zero
+    output regardless of how far off-centre it was held."""
+    sm = StateMachine()
+    t = arm(sm)
+    t_scroll = _enter_scroll(sm, t)
+    offset = config.SCROLL_NEUTRAL_DEADZONE * 6
+    per_frame = _hold_offset(sm, t_scroll, offset, frames=20)
+    scrolling_frames = [f for f in per_frame if f]
+    # The first couple of frames are filter settling transient (see
+    # test_offset_within_deadzone_produces_nothing for the no-overshoot
+    # case); once settled, a held offset must keep producing Scroll on
+    # essentially every frame.
+    assert len(scrolling_frames) >= len(per_frame) - 3
+
+
+def test_larger_offset_scrolls_proportionally_faster():
+    """A larger sustained offset must produce a faster sustained scroll
+    rate, not just a larger one-off jump -- this is the "joystick" property
+    the rate model is built on."""
+    sm_small = StateMachine()
+    t_small = _enter_scroll(sm_small, arm(sm_small))
+    small_offset = config.SCROLL_NEUTRAL_DEADZONE * 4
+    small_frames = _hold_offset(sm_small, t_small, small_offset, frames=40)
+    small_rate = sum(abs(s.dy) for f in small_frames[-10:] for s in f) / (10 / 30.0)
+
+    sm_large = StateMachine()
+    t_large = _enter_scroll(sm_large, arm(sm_large))
+    large_offset = config.SCROLL_NEUTRAL_DEADZONE * 8
+    large_frames = _hold_offset(sm_large, t_large, large_offset, frames=40)
+    large_rate = sum(abs(s.dy) for f in large_frames[-10:] for s in f) / (10 / 30.0)
+
+    assert large_rate > 1.5 * small_rate
+
+
+def test_scroll_neutral_is_re_recorded_on_each_entry():
+    """Re-entering scroll after repositioning the hand must not inherit a
+    stale neutral from the previous visit -- holding exactly at the new
+    entry position must produce no scroll, even though it is far from the
+    old neutral.
+
+    Frames are spaced at a realistic ~30 fps throughout (rather than the
+    coarse dwell-only spacing `arm`/`_enter_scroll` use elsewhere) so the
+    One Euro filter has fully settled at each held position before the
+    next transition -- otherwise a neutral snapshot taken mid-transient
+    would not equal the position it's later compared against, which is a
+    filter-settling artifact, not the bug this test targets.
     """
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, fingers=TWO))
-    sm.update(feat(t + 0.25, fingers=TWO))
-    t_now = t + 0.25
-    y = 0.5
-    dt = 1.0 / fps
-    n = int(distance / (speed * dt))
-    total = 0.0
-    for _ in range(n):
+    dt = 1.0 / 30.0
+    t_now = t
+
+    # Settle into scroll at neutral 0.5.
+    for _ in range(10):
         t_now += dt
-        y += speed * dt
-        for intent in sm.update(feat(t_now, fingers=TWO, ref=(0.5, y))):
-            if isinstance(intent, Scroll):
-                total += abs(intent.dy)
-    return total
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.5)))
+    assert sm.state is State.SCROLL
 
+    # Reposition to a very different height and let the filter settle
+    # there before re-entering.
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, ref=(0.5, 0.8)))
+    assert sm.state is State.TRACKING
 
-def test_slow_scroll_produces_much_smaller_magnitude_than_fast_for_same_distance():
-    """The property the user is asking for: scroll needs its own acceleration
-    curve so a small precise scroll and a long fast one are both reachable.
-    Covering the *same total vertical distance*, slowly vs. quickly, must
-    produce very different total Scroll output -- if it didn't, the flat-gain
-    bug (dead precision, no controllable reach) would still be present under
-    a different-looking implementation.
+    # Re-enter scroll from the new, settled position.
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.8)))
+    assert sm.state is State.SCROLL
 
-    The two speeds are the user's measured median and p90 (flick) vertical
-    hand speed while scrolling -- see config.py's SCROLL_ACCEL_VREF comment.
-    """
-    distance = 0.4
-    slow_total = _scroll_at_constant_speed(0.011, distance)
-    fast_total = _scroll_at_constant_speed(0.110, distance)
-    assert fast_total > 3 * slow_total
+    # Holding exactly at the new entry position -- the new neutral -- must
+    # produce no scroll. A stale neutral of 0.5 would read this as a large
+    # offset, far outside the deadzone, and scroll continuously.
+    per_frame = _hold_offset(sm, t_now, 0.30, frames=10)
+    assert all(scrolls == [] for scrolls in per_frame)
 
 
 def test_losing_two_finger_posture_leaves_scroll():

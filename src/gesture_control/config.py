@@ -147,26 +147,32 @@ ACCEL_MIN = 0.5
 ACCEL_MAX = 2.5
 ACCEL_VREF = 1.2
 
-# Raised from 900 (2026-08-11): the user reported "scroll does nothing."
-# Measuring recordings/scroll_attempt.jsonl (15 s deliberate scroll gesture):
-# SCROLL_GAIN=900: 220 px total scroll, ~26 px/sec, effectively dead.
-# SCROLL_GAIN=5000: 1362 px total scroll, ~160 px/sec, still far too slow.
-# SCROLL_GAIN=20000: targets ~5400 px, ~640 px/sec -- brisk but controllable.
-# A trackpad flick moves 1000-2000 px/sec; scroll speed is highly personal.
-# This is the constant most users will want to adjust. See also README tuning.
-SCROLL_GAIN = 20000.0
+# Rate-based scrolling (2026-08-20 redesign): hand OFFSET from a neutral
+# point sets a continuous scroll SPEED, like a joystick, replacing the
+# earlier displacement-based model (a since-removed SCROLL_GAIN and
+# scroll_accel curve) where scroll distance followed how far the hand
+# physically moved. That model had a hard failure: once the user's hand
+# reached the top or bottom of its comfortable range there was nowhere
+# left to move, and scrolling simply stopped. Measured from
+# recordings/scroll_attempt.jsonl, the usable vertical span during the
+# scroll gesture is only 0.22 of frame height, capping one displacement
+# stroke at roughly 4400 px -- confirmed too little range for real use.
+# Under the rate model hand range stops mattering, because the user holds
+# a position rather than sweeping, so they can never run out.
+#
+# On entering SCROLL, the current vertical hand position is recorded as
+# `neutral`. Each frame, offset = current_y - neutral; inside
+# SCROLL_NEUTRAL_DEADZONE this emits nothing (lets the user stop by
+# returning to centre, and prevents drift while holding still); outside it,
+# speed (px/sec) = sign(offset) * (abs(offset) - SCROLL_NEUTRAL_DEADZONE) *
+# SCROLL_RATE_GAIN, and the per-frame scroll amount is speed * dt.
+#
+# Sized from the same 0.22 frame-height span above, so a comfortable
+# maximum deflection is roughly 0.11 either side of neutral.
+SCROLL_NEUTRAL_DEADZONE = 0.02   # frame-heights; inside this, no scrolling
+SCROLL_RATE_GAIN = 30000.0       # px/sec per frame-height of offset
 SCROLL_DWELL_S = 0.200
 SCROLL_MIN_PX = 1.0
-
-# Scroll gets its own acceleration curve for the same reason the cursor does:
-# a flat gain cannot serve both a small precise scroll and a long fast one.
-# Measured vertical hand speed while scrolling spans 0.001 to 0.110
-# frame-heights/sec, so ACCEL_VREF (tuned for much faster cursor motion) is
-# the wrong scale here. The low floor also suppresses tremor: at rest the
-# curve collapses scroll to near zero, so the page stops drifting.
-SCROLL_ACCEL_MIN = 0.2
-SCROLL_ACCEL_MAX = 2.5
-SCROLL_ACCEL_VREF = 0.05
 
 # Scroll additionally requires the thumb tucked toward the palm, because
 # opening the middle finger for a middle-pinch double-click passes
