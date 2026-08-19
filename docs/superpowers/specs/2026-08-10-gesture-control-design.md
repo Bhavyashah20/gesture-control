@@ -27,6 +27,53 @@ window close buttons" and "scroll does nothing."
    (`clutch.jsonl`, dominated by extreme finger articulation that moves the
    knuckles themselves). Net win, applied. See "Feature extraction" below.
 
+## Amendment (2026-08-19): scroll gets its own acceleration curve
+
+Raising `SCROLL_GAIN` (2026-08-11, above) fixed "scroll does nothing" but
+left a related report: "the amount of scroll is hard to control." The cause
+was that scroll had no acceleration curve while the cursor did — the cursor
+scales its gain by `accel(speed)` so slow hand movement gives fine control
+and fast movement gives reach, but scroll's output was flat
+(`px = dyn × SCROLL_GAIN`), so every hand speed scrolled at the identical
+rate. Measured vertical hand speed while holding the scroll posture in
+`recordings/scroll_attempt.jsonl` spans two orders of magnitude (p10 0.001,
+median 0.011, p75 0.040, p90 0.110 frame-heights/sec); at the flat gain
+those map to roughly 29–2196 px/sec, so there was no way to get both a small
+precise scroll and a long fast one, and because even the gentlest movement
+scrolled, hand tremor while holding the posture made the page drift.
+
+The fix mirrors the cursor's shape with scroll's own constants — scroll hand
+speed runs roughly an order of magnitude slower than cursor hand speed, so
+`ACCEL_VREF` (tuned for the cursor) is the wrong scale for it:
+
+```
+SCROLL_ACCEL_MIN = 0.2
+SCROLL_ACCEL_MAX = 2.5
+SCROLL_ACCEL_VREF = 0.05
+```
+
+`scroll_accel(speed) = clamp(SCROLL_ACCEL_MIN + speed / SCROLL_ACCEL_VREF,
+SCROLL_ACCEL_MIN, SCROLL_ACCEL_MAX)`, the same clamp shape as `accel()`. The
+`Scroll` branch of the state machine now computes the frame's vertical hand
+speed (`abs(dyn) / dt`, guarded against `dt <= 0`) and scales by
+`scroll_accel(speed)`: `px = dyn × SCROLL_GAIN × scroll_accel(speed)`. The
+existing `SCROLL_MIN_PX` per-event deadband is unchanged and still applies to
+the resulting `px`.
+
+Replayed against `recordings/scroll_attempt.jsonl`: 128 `Scroll` events
+totaling 11206 px over the 15 s gesture (previously 154 events, 5538 px under
+the flat gain) — comfortably inside a usable range, not "does nothing" and
+not an unusable firehose. Effective scroll rate at the user's measured
+speeds: gentle (p10, 0.001) rounds to 0 px/sec — below `SCROLL_MIN_PX` every
+frame, since scroll has no residual accumulator (see "The jitter deadzone"
+below for why scroll deliberately doesn't get one), so tremor at that speed
+no longer drifts the page at all; median (0.011) ≈ 92 px/sec, fine control;
+p75 (0.040) ≈ 800 px/sec; p90/flick (0.110) ≈ 5280 px/sec, reach without
+being clamped at `SCROLL_ACCEL_MAX` (raw value 2.4, ceiling is 2.5) — a
+harder flick still has headroom to go faster. `reaching_past.jsonl` and
+`talking_hands.jsonl` continue to replay to zero intents, unaffected by a
+change confined to the `Scroll` state.
+
 ## Amendment (2026-08-11): direct manipulation replaces trackpad mimicry
 
 The original model (below, largely unchanged) mapped a pinch to two
@@ -559,10 +606,14 @@ confusing possible failure for the user.
 ### Scroll
 
 While in `Scroll`, vertical movement of `cursor_ref` maps to pixel-unit scroll
-events: `scroll_px = dy_normalized × SCROLL_GAIN`, with `SCROLL_GAIN = 20000`
-(raised from 900 → 5000 on 2026-08-11, further raised to 20000 on 2026-08-11 —
-see below). Natural scrolling direction is matched to the system setting by
-reading `com.apple.swipescrolldirection`; if unavailable, defaults to natural.
+events: `scroll_px = dy_normalized × SCROLL_GAIN × scroll_accel(speed)`, with
+`SCROLL_GAIN = 20000` (raised from 900 → 5000 on 2026-08-11, further raised
+to 20000 on 2026-08-11 — see below) and `scroll_accel` an acceleration curve
+added 2026-08-19 — see that amendment above for the full derivation. `speed`
+is the frame's vertical hand speed, `abs(dy_normalized) / dt`, guarded
+against `dt <= 0`. Natural scrolling direction is matched to the system
+setting by reading `com.apple.swipescrolldirection`; if unavailable, defaults
+to natural.
 
 **`SCROLL_GAIN` raised 900 → 5000 → 20000 (2026-08-11): scroll magnitude undertuned.**
 The user reported "scroll does nothing." `recordings/scroll_attempt.jsonl` (a
@@ -817,7 +868,9 @@ scroll, swipe, filter) are unchanged by this redesign.
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `BASE_GAIN_PX` | 2000 | cursor travel per hand movement; raised from 1600 to increase reach from 560 px to 1000 px per hand-sweep, enabling edge access on 1470 px display with index-curl clutch covering the rest; cost: hand tremor amplified |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.5 / 2.5 | precision floor vs. reach ceiling; ACCEL_MIN raised from 0.35 to 0.5 to increase slow-movement reach from 560 px to 1000 px per hand-sweep |
-| `SCROLL_GAIN` | 20000 | scroll speed; raised from 900 → 5000 → 20000 (2026-08-11) — see "Scroll" above. GAIN=900 produced 220 px total, GAIN=5000 produced 1362 px (160 px/sec, too slow), GAIN=20000 produces 5538 px (650 px/sec). Scale proportionally if you prefer faster or slower scrolling |
+| `SCROLL_GAIN` | 20000 | overall scroll speed; raised from 900 → 5000 → 20000 (2026-08-11) — see "Scroll" above. This is the constant most users will want to adjust for scroll feeling too fast or too slow across the board. Scale proportionally if you prefer faster or slower scrolling |
+| `SCROLL_ACCEL_MIN` / `SCROLL_ACCEL_MAX` | 0.2 / 2.5 | scroll acceleration floor and ceiling (added 2026-08-19) — see "Amendment (2026-08-19)" above. Same role as `ACCEL_MIN` / `ACCEL_MAX` but for scroll: the floor keeps a near-still hand from drifting the page, the ceiling caps how much a fast flick is amplified |
+| `SCROLL_ACCEL_VREF` | 0.05 | controls how sharply scroll speed ramps up as your hand moves faster — this is the constant most users will want to adjust to change scroll's responsiveness. Lower it so a smaller increase in hand speed reaches full acceleration sooner (more twitchy); raise it so it takes a more deliberate flick before scroll speeds up (duller). Scroll hand speed is roughly an order of magnitude slower than cursor hand speed, so `ACCEL_VREF` (tuned for the cursor) is the wrong scale for it |
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no single scroll event is emitted |
 | `MOVE_DEADZONE_PX` | 2.0 | jitter deadzone for `Move` (added 2026-08-11) — see "The jitter deadzone" above. Sub-threshold pixel deltas accumulate in a residual instead of being emitted or dropped, so tremor cancels but slow deliberate movement still arrives |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |

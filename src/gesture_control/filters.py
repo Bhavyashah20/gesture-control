@@ -63,6 +63,19 @@ def accel(speed: float) -> float:
     return min(max(raw, config.ACCEL_MIN), config.ACCEL_MAX)
 
 
+def scroll_accel(speed: float) -> float:
+    """Scroll acceleration curve. speed is in frame heights per second.
+
+    Same clamp shape as accel(), but with scroll's own constants: measured
+    scroll hand speed is roughly an order of magnitude slower than cursor
+    hand speed, so ACCEL_VREF (tuned for the cursor) would leave this curve
+    pinned near its floor for real scroll gestures. See config.py's
+    SCROLL_ACCEL_VREF comment.
+    """
+    raw = config.SCROLL_ACCEL_MIN + speed / config.SCROLL_ACCEL_VREF
+    return min(max(raw, config.SCROLL_ACCEL_MIN), config.SCROLL_ACCEL_MAX)
+
+
 def apply_gain(dx: float, dy: float, dt: float) -> tuple[float, float]:
     """Normalized hand delta -> screen pixel delta."""
     speed = math.hypot(dx, dy) / dt if dt > 0.0 else 0.0

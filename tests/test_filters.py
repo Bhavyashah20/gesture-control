@@ -1,7 +1,7 @@
 import math
 
 from gesture_control import config
-from gesture_control.filters import OneEuroFilter, Point2Filter, accel, apply_gain
+from gesture_control.filters import OneEuroFilter, Point2Filter, accel, apply_gain, scroll_accel
 from gesture_control.types import Point2
 
 
@@ -95,3 +95,18 @@ def test_zero_dt_does_not_divide_by_zero():
     dx, dy = apply_gain(0.01, 0.0, 0.0)
     assert dx == 0.01 * config.BASE_GAIN_PX * config.ACCEL_MIN
     assert dy == 0.0
+
+
+def test_scroll_accel_config_bounds_are_consistent():
+    assert config.SCROLL_ACCEL_MIN < config.SCROLL_ACCEL_MAX
+
+
+def test_scroll_accel_is_clamped_at_both_ends():
+    assert scroll_accel(0.0) == config.SCROLL_ACCEL_MIN
+    assert scroll_accel(1e6) == config.SCROLL_ACCEL_MAX
+
+
+def test_scroll_accel_is_monotonic():
+    speeds = [0.0, 0.001, 0.01, 0.04, 0.11, 1.0]
+    values = [scroll_accel(s) for s in speeds]
+    assert values == sorted(values)

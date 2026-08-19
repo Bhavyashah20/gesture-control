@@ -47,6 +47,16 @@ recordings rather than guessed:
   timing were already correct, but the pixel output per gesture was about
   ten times too small to notice.
 
+**Scroll acceleration (2026-08-19).** Raising `SCROLL_GAIN` fixed "scroll does
+nothing" but left "the amount of scroll is hard to control": with a flat gain,
+every hand speed scrolled at the same rate, so there was no way to get both a
+small precise scroll and a long fast one, and even gentle hand tremor while
+holding the scroll posture nudged the page. Scroll now has its own
+acceleration curve (`scroll_accel`, mirroring the cursor's `accel` but with
+its own constants — see "Tuning" below), so slow hand movement gives fine
+control, fast movement gives reach, and tremor near the resting speed
+collapses to below the scroll deadband instead of drifting the page.
+
 Curling and pinching are mutually exclusive, on purpose: curling your index
 finger toward your palm brings the fingertip onto the thumb, which reads as
 a pinch geometrically — there is no way to tell the two apart from the
@@ -196,14 +206,21 @@ more tremor rejection for coarser slow-movement steps; lowering it does the
 opposite. It applies identically whether you're just moving the cursor or
 dragging.
 
-`SCROLL_GAIN` governs scroll speed; this is the constant you are most likely to
-want to adjust if scrolling feels too fast or too slow. A trackpad flick moves
-1000–2000 px/sec; the current value targets about 640 px/sec, which is brisk but
-still controllable. Scale it proportionally if you prefer slower or faster
-scrolling. If you change other constants and scroll stops working, replay
-`recordings/scroll_attempt.jsonl` and check the total pixel output before
-retuning — the original "scroll does nothing" report turned out to be pure
-magnitude, not a posture or timing bug, so check magnitude first.
+Scroll has its own acceleration curve (2026-08-19), the same shape as the
+cursor's but with its own constants — scroll hand speed runs roughly an order
+of magnitude slower than cursor hand speed, so the cursor's `ACCEL_VREF`
+would be the wrong scale for it. `SCROLL_GAIN` sets overall scroll speed —
+this is the constant you are most likely to want to adjust if scrolling
+feels too fast or too slow across the board. `SCROLL_ACCEL_VREF` controls how
+sharply that speed ramps up as your hand moves faster — lower it to reach
+full speed with less hand motion, raise it to require a more deliberate
+flick before scroll speeds up. `SCROLL_ACCEL_MIN` sets the floor a bare-still
+hand still scrolls at (kept low so tremor near-collapses to nothing rather
+than drifting the page), and `SCROLL_ACCEL_MAX` caps how much a fast flick
+can be amplified. If you change other constants and scroll stops working,
+replay `recordings/scroll_attempt.jsonl` and check the total pixel output
+before retuning — the original "scroll does nothing" report turned out to be
+pure magnitude, not a posture or timing bug, so check magnitude first.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v

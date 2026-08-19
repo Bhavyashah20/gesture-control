@@ -94,6 +94,16 @@ SCROLL_GAIN = 20000.0
 SCROLL_DWELL_S = 0.200
 SCROLL_MIN_PX = 1.0
 
+# Scroll gets its own acceleration curve for the same reason the cursor does:
+# a flat gain cannot serve both a small precise scroll and a long fast one.
+# Measured vertical hand speed while scrolling spans 0.001 to 0.110
+# frame-heights/sec, so ACCEL_VREF (tuned for much faster cursor motion) is
+# the wrong scale here. The low floor also suppresses tremor: at rest the
+# curve collapses scroll to near zero, so the page stops drifting.
+SCROLL_ACCEL_MIN = 0.2
+SCROLL_ACCEL_MAX = 2.5
+SCROLL_ACCEL_VREF = 0.05
+
 SWIPE_VEL = 0.8
 SWIPE_DIST = 0.20
 SWIPE_HOLD_S = 0.100

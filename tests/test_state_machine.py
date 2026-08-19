@@ -476,6 +476,48 @@ def test_scroll_ignores_horizontal_motion():
     assert not any(isinstance(i, Scroll) for i in out)
 
 
+def _scroll_at_constant_speed(speed, distance, fps=30.0):
+    """Drive the SCROLL state at a constant vertical hand speed (frame-heights
+    per second) until `distance` frame-heights have been covered. Returns the
+    total absolute Scroll output over that run. Multiple frames (rather than
+    one big jump) let the One Euro filter reach steady state, so the result
+    reflects the acceleration curve rather than filter startup transients.
+    """
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=TWO))
+    sm.update(feat(t + 0.25, fingers=TWO))
+    t_now = t + 0.25
+    y = 0.5
+    dt = 1.0 / fps
+    n = int(distance / (speed * dt))
+    total = 0.0
+    for _ in range(n):
+        t_now += dt
+        y += speed * dt
+        for intent in sm.update(feat(t_now, fingers=TWO, ref=(0.5, y))):
+            if isinstance(intent, Scroll):
+                total += abs(intent.dy)
+    return total
+
+
+def test_slow_scroll_produces_much_smaller_magnitude_than_fast_for_same_distance():
+    """The property the user is asking for: scroll needs its own acceleration
+    curve so a small precise scroll and a long fast one are both reachable.
+    Covering the *same total vertical distance*, slowly vs. quickly, must
+    produce very different total Scroll output -- if it didn't, the flat-gain
+    bug (dead precision, no controllable reach) would still be present under
+    a different-looking implementation.
+
+    The two speeds are the user's measured median and p90 (flick) vertical
+    hand speed while scrolling -- see config.py's SCROLL_ACCEL_VREF comment.
+    """
+    distance = 0.4
+    slow_total = _scroll_at_constant_speed(0.011, distance)
+    fast_total = _scroll_at_constant_speed(0.110, distance)
+    assert fast_total > 3 * slow_total
+
+
 def test_losing_two_finger_posture_leaves_scroll():
     sm = StateMachine()
     t = arm(sm)

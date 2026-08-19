@@ -5,7 +5,7 @@ from collections import deque
 from enum import Enum, auto
 
 from . import config
-from .filters import Point2Filter, apply_gain
+from .filters import Point2Filter, apply_gain, scroll_accel
 from .gate import Gate
 from .types import ButtonDown, ButtonUp, Click, Features, Intent, Move, Point2, Scroll, Space
 
@@ -223,7 +223,8 @@ class StateMachine:
             if not _is_scroll_posture(f):
                 self._state = State.TRACKING
                 return intents
-            px = dyn * config.SCROLL_GAIN
+            speed = abs(dyn) / dt if dt > 0.0 else 0.0
+            px = dyn * config.SCROLL_GAIN * scroll_accel(speed)
             if abs(px) >= config.SCROLL_MIN_PX:
                 intents.append(Scroll(px))
             return intents
