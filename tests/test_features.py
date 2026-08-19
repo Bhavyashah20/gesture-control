@@ -5,7 +5,7 @@ from gesture_control.features import extract
 from gesture_control.types import HandFrame, Point3
 
 
-def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None,
+def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None, tuck=None,
               fingers=(True, True, True, True),
               left=False, offset=(0.0, 0.0), t=0.0,
               thumb_z=0.0, wrist_z=0.0):
@@ -53,6 +53,14 @@ def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None,
         # so dist(wrist, index_tip) / hand_scale == curl exactly, independent
         # of `fingers`, `pinch`, and `pinch2`.
         put(8, 0.50, 0.60 - curl * 0.20)
+
+    if tuck is not None:
+        # Placed at a fixed offset from the (already-positioned) pinky MCP,
+        # same x, following the same pattern as `curl` overriding landmark 8:
+        # dist(thumb_tip, pinky_mcp) / hand_scale == tuck exactly,
+        # independent of `pinch`, which only ever moves landmark 4 relative
+        # to landmark 8.
+        put(4, 0.44, 0.42 - tuck * 0.20)
 
     if left:
         pts = [Point3(1.0 - p.x, p.y, p.z) for p in pts]
@@ -213,6 +221,34 @@ def test_hand_scale_also_uses_3d_distance_consistently_with_pinch():
     assert rotated.hand_scale > flat.hand_scale
     expected = math.dist((0.50, 0.60, 0.20), (0.50, 0.40, 0.0))
     assert math.isclose(rotated.hand_scale, expected, abs_tol=1e-6)
+
+
+def test_thumb_tuck_ratio_matches_thumb_to_pinky_mcp_distance():
+    f = extract(make_hand(tuck=0.55))
+    assert math.isclose(f.thumb_tuck_ratio, 0.55, abs_tol=1e-6)
+
+
+def test_thumb_tuck_ratio_is_invariant_to_hand_scale():
+    near = extract(make_hand(scale=1.0, tuck=0.55))
+    far = extract(make_hand(scale=0.5, tuck=0.55))
+    assert math.isclose(near.thumb_tuck_ratio, far.thumb_tuck_ratio, abs_tol=1e-6)
+
+
+def test_thumb_tuck_ratio_is_lower_when_tucked_than_extended():
+    """dist(landmark[4], landmark[17]) / hand_scale must shrink as the thumb
+    moves toward the palm -- the signal the scroll gate depends on."""
+    tucked = extract(make_hand(tuck=0.55))
+    extended = extract(make_hand(tuck=0.90))
+    assert tucked.thumb_tuck_ratio < extended.thumb_tuck_ratio
+
+
+def test_thumb_tuck_ratio_is_independent_of_pinch():
+    """Closing the index-thumb pinch moves landmark 4, but `tuck` overrides
+    landmark 4's position afterward, so thumb_tuck_ratio must not change
+    with `pinch`."""
+    a = extract(make_hand(pinch=0.10, tuck=0.55))
+    b = extract(make_hand(pinch=0.90, tuck=0.55))
+    assert math.isclose(a.thumb_tuck_ratio, b.thumb_tuck_ratio, abs_tol=1e-6)
 
 
 def test_index_curl_ratio_is_independent_of_pinch():

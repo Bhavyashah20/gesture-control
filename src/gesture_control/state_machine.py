@@ -12,13 +12,25 @@ from .types import ButtonDown, ButtonUp, Click, Features, Intent, Move, Point2, 
 
 def _is_scroll_posture(f: Features) -> bool:
     """Check if the hand posture is scroll-ready: index and middle fingers
-    extended, ring finger not extended. The pinky is ignored (it is unreliable
-    and contributes nothing to distinguishing this posture from others).
+    extended, ring finger not extended, thumb tucked toward the palm. The
+    pinky is ignored (it is unreliable and contributes nothing to
+    distinguishing this posture from others).
+
+    The thumb-tuck requirement (see config.py's THUMB_TUCK_MAX comment)
+    exists because opening the middle finger to perform a middle-pinch
+    double-click passes through the finger posture above -- the middle-pinch
+    also extends the thumb out to meet the middle fingertip, so requiring
+    the thumb tucked makes the two gestures mutually exclusive.
 
     This predicate is used for both entry and exit conditions to ensure
     consistency: enter scroll if this returns True after dwell, exit if it
     returns False."""
-    return f.fingers_up[0] and f.fingers_up[1] and not f.fingers_up[2]
+    return (
+        f.fingers_up[0]
+        and f.fingers_up[1]
+        and not f.fingers_up[2]
+        and f.thumb_tuck_ratio < config.THUMB_TUCK_MAX
+    )
 
 
 class State(Enum):

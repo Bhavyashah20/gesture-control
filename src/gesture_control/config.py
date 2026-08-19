@@ -104,6 +104,18 @@ SCROLL_ACCEL_MIN = 0.2
 SCROLL_ACCEL_MAX = 2.5
 SCROLL_ACCEL_VREF = 0.05
 
+# Scroll additionally requires the thumb tucked toward the palm, because
+# opening the middle finger for a middle-pinch double-click passes
+# through the scroll finger posture and caused spurious scrolling. A
+# middle-pinch extends the thumb out to meet the middle fingertip, so the
+# two gestures become mutually exclusive. Measured thumb-tuck medians:
+# scroll 0.55, middle-pinch 0.86, index clicks 0.90. At 0.70 the gate
+# keeps 195 of 260 genuine scroll frames and rejects every colliding
+# frame in middle_pinch and live_clicks. That 75% retention is measured
+# on a recording where the thumb was not deliberately tucked, so real
+# retention should be higher.
+THUMB_TUCK_MAX = 0.70
+
 SWIPE_VEL = 0.8
 SWIPE_DIST = 0.20
 SWIPE_HOLD_S = 0.100

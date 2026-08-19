@@ -19,7 +19,7 @@ like picking up a file and moving your hand.
 | Move while pinched | Drag |
 | Release the pinch | Release the mouse button |
 | Pinch (middle finger) | Double-click |
-| Index and middle extended, ring curled, move vertically | Scroll |
+| Index and middle extended, ring curled, thumb tucked to the palm, move vertically | Scroll |
 | Open palm, sweep sideways | Previous or next fullscreen Space |
 | `Esc` | Stop immediately |
 
@@ -71,6 +71,22 @@ must never release the button"); it changed once it was clear the two
 signals aren't independent, because holding through a spurious pinch
 reading is exactly the stuck-button failure this project guards against
 everywhere else.
+
+**Scroll thumb gate (2026-08-19).** The user reported spurious scrolling
+when they meant to double-click: opening the middle finger to pinch it to
+the thumb passes through the scroll finger posture (index and middle
+extended, ring not) on its way there, since the index finger stays extended
+for tracking the whole time. Scroll now additionally requires the thumb
+tucked toward the palm — `thumb_tuck_ratio` (thumb tip to pinky knuckle,
+scale-normalized) below `THUMB_TUCK_MAX` — because a middle-pinch extends
+the thumb out to meet the middle fingertip, making the two gestures mutually
+exclusive by construction. Measured thumb-tuck medians: scroll 0.55,
+middle-pinch 0.86, index clicks 0.90. At `THUMB_TUCK_MAX = 0.70`, the gate
+keeps 195 of 260 genuine scroll frames from `recordings/scroll_attempt.jsonl`
+and rejects every colliding frame from `middle_pinch.jsonl` and
+`live_clicks.jsonl`. That 75% retention is measured on a recording where the
+thumb was not deliberately tucked; now that the tuck is part of the
+gesture, real retention should be higher.
 
 This replaces an earlier design where a pinch meant both "move the cursor"
 and, if held still, "start a drag" — which meant any pause while aiming a
@@ -196,6 +212,17 @@ set by pinching, not pointing: `index_curl_ratio` runs 1.03-1.39 while
 genuinely pinching (see `PINCH_CLOSE`/`PINCH2_CLOSE` above), and a pinch
 misread as a curl would freeze the cursor mid-drag, so `INDEX_CURL_OPEN =
 1.20` stays below the pointing cluster while never touching the pinch floor.
+
+`THUMB_TUCK_MAX` (2026-08-19) governs the scroll thumb gate: scroll requires
+`thumb_tuck_ratio` (thumb tip to pinky knuckle, scale-normalized) below this
+value, in addition to the finger posture, so that opening the middle finger
+to pinch it to the thumb — which passes through the scroll finger posture on
+the way there — cannot be misread as scroll. Measured medians: scroll 0.55,
+middle-pinch 0.86, index clicks 0.90. `0.70` keeps 195 of 260 genuine scroll
+frames in `recordings/scroll_attempt.jsonl` while rejecting every colliding
+frame in `middle_pinch.jsonl` and `live_clicks.jsonl`. Lowering it trades
+scroll retention for a wider safety margin against the collision; raising it
+does the opposite.
 
 `MOVE_DEADZONE_PX` (2026-08-11) governs the jitter deadzone: sub-threshold
 per-frame `Move` deltas accumulate in a residual instead of being emitted or

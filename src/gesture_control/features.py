@@ -26,6 +26,13 @@ _ABSENT = Features(
     # comment) so an absent frame reads as "uncurled", not "curled" -- an
     # absent hand must never freeze the cursor via the curl path.
     index_curl_ratio=1.71,
+    # Matches the measured five_clicks median (see config.py's
+    # THUMB_TUCK_MAX comment), the most "resting hand" of the recordings, so
+    # an absent frame reads as "thumb not tucked" -- an absent hand must
+    # never satisfy the scroll gate via the tuck path. fingers_up is already
+    # all-False for an absent frame, so this is belt-and-suspenders, not
+    # load-bearing on its own.
+    thumb_tuck_ratio=0.95,
     fingers_up=(False, False, False, False),
     palm_facing=False,
     hand_scale=0.0,
@@ -87,6 +94,13 @@ def extract(frame: HandFrame) -> Features:
     # config.py's INDEX_CURL_CLOSE / INDEX_CURL_OPEN): curling the index
     # toward the palm shrinks this ratio, freezing the cursor.
     index_curl = _dist(pts[WRIST], pts[INDEX_TIP]) / scale
+    # Thumb tip to pinky knuckle, scale-normalized. Small means the thumb is
+    # tucked across the palm. Drives the scroll gate's thumb condition (see
+    # config.py's THUMB_TUCK_MAX): required in addition to the finger
+    # posture so that opening the middle finger for a middle-pinch
+    # double-click (which extends the thumb out to meet it) cannot also
+    # read as scroll.
+    thumb_tuck = _dist(pts[THUMB_TIP], pts[PINKY_MCP]) / scale
 
     fingers = tuple(
         _dist(pts[WRIST], pts[tip]) > config.FINGER_EXT_RATIO * _dist(pts[WRIST], pts[pip])
@@ -97,6 +111,7 @@ def extract(frame: HandFrame) -> Features:
         pinch_ratio=pinch,
         pinch2_ratio=pinch2,
         index_curl_ratio=index_curl,
+        thumb_tuck_ratio=thumb_tuck,
         fingers_up=fingers,
         palm_facing=_palm_facing(pts, frame.handedness),
         hand_scale=scale,

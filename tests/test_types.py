@@ -18,7 +18,7 @@ def test_hand_frame_absent_has_no_points():
 
 def test_features_carry_four_fingers():
     f = Features(
-        pinch_ratio=0.5, pinch2_ratio=0.5, index_curl_ratio=1.7,
+        pinch_ratio=0.5, pinch2_ratio=0.5, index_curl_ratio=1.7, thumb_tuck_ratio=0.95,
         fingers_up=(True, True, False, False),
         palm_facing=True, hand_scale=0.2, cursor_ref=Point2(0.5, 0.5), t=1.0,
         present=True,

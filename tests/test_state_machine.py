@@ -6,13 +6,17 @@ from gesture_control.state_machine import State, StateMachine
 from gesture_control.types import ButtonDown, ButtonUp, Click, Features, Move, Point2, Scroll, Space
 
 
-def feat(t, pinch=0.9, pinch2=0.9, curl=1.71, fingers=(True, True, True, True), palm=True,
+def feat(t, pinch=0.9, pinch2=0.9, curl=1.71, tuck=config.THUMB_TUCK_MAX - 0.10,
+         fingers=(True, True, True, True), palm=True,
          ref=(0.5, 0.5), scale=0.20, present=True):
     """`curl` defaults to 1.71, the measured open-hand median (config.py) --
     well above INDEX_CURL_OPEN, so tests that don't care about the clutch
-    never accidentally freeze."""
+    never accidentally freeze.
+
+    `tuck` defaults comfortably under THUMB_TUCK_MAX (tucked), so tests that
+    don't care about the scroll thumb gate never accidentally block it."""
     return Features(
-        pinch_ratio=pinch, pinch2_ratio=pinch2, index_curl_ratio=curl,
+        pinch_ratio=pinch, pinch2_ratio=pinch2, index_curl_ratio=curl, thumb_tuck_ratio=tuck,
         fingers_up=fingers, palm_facing=palm,
         hand_scale=scale, cursor_ref=Point2(*ref), t=t, present=present,
     )
@@ -430,6 +434,46 @@ def test_fully_open_hand_does_not_enter_scroll():
     t = arm(sm)
     sm.update(feat(t, fingers=FULLY_OPEN))
     sm.update(feat(t + 0.25, fingers=FULLY_OPEN))
+    assert sm.state is State.TRACKING
+
+
+def test_scroll_posture_with_extended_thumb_does_not_enter_scroll():
+    """The finger posture alone is not enough: with the thumb extended out
+    (not tucked toward the palm), the same finger shape must not enter
+    scroll -- this is what keeps a middle-pinch double-click, which extends
+    the thumb to meet the middle fingertip, from being misread as scroll."""
+    sm = StateMachine()
+    t = arm(sm)
+    untucked = config.THUMB_TUCK_MAX + 0.10
+    sm.update(feat(t, fingers=TWO, tuck=untucked))
+    sm.update(feat(t + 0.25, fingers=TWO, tuck=untucked))
+    assert sm.state is State.TRACKING
+
+
+def test_scroll_posture_with_tucked_thumb_enters_scroll():
+    """Same finger posture as above, but with the thumb tucked toward the
+    palm, must enter scroll -- the tuck is an additional requirement, not a
+    replacement for the finger posture."""
+    sm = StateMachine()
+    t = arm(sm)
+    tucked = config.THUMB_TUCK_MAX - 0.10
+    sm.update(feat(t, fingers=TWO, tuck=tucked))
+    sm.update(feat(t + 0.25, fingers=TWO, tuck=tucked))
+    assert sm.state is State.SCROLL
+
+
+def test_scroll_exits_when_thumb_untucks_while_fingers_stay_in_position():
+    """The natural way a user leaves the scroll gesture to double-click:
+    fingers stay in the scroll posture, but the thumb comes off the palm to
+    meet the middle fingertip. Scroll must exit on that alone."""
+    sm = StateMachine()
+    t = arm(sm)
+    tucked = config.THUMB_TUCK_MAX - 0.10
+    untucked = config.THUMB_TUCK_MAX + 0.10
+    sm.update(feat(t, fingers=TWO, tuck=tucked))
+    sm.update(feat(t + 0.25, fingers=TWO, tuck=tucked))
+    assert sm.state is State.SCROLL
+    sm.update(feat(t + 0.30, fingers=TWO, tuck=untucked))
     assert sm.state is State.TRACKING
 
 
