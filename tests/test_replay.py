@@ -217,26 +217,21 @@ def test_five_clicks_recording_never_produces_a_click_two():
 PINCH_FIXTURES = ("five_clicks", "one_double_click", "live_clicks", "drag_a_to_b", "middle_pinch")
 
 
-# NOTE on the brief's "clutch.jsonl replays to zero button/click/space
-# intents" requirement: that does NOT hold, and the two tests below pin
-# what actually does. Full data quoted in the task report. Summary: this
-# fix (curl evaluated before pinch, pinch ignored while curled, an
-# already-open button safety-released the instant curl engages) makes
-# every one of the 124 curled frames produce zero ButtonDown/Click(2) --
-# see test_clutch_recording_produces_no_press_on_a_curled_frame below --
-# and fixes the stuck button (every ButtonDown is now matched by a
-# ButtonUp -- see test_clutch_recording_never_ends_with_the_button_stuck_down).
-# One spurious Click(2) remains at t=1.628s, where index_curl_ratio=1.936
-# -- deep in the "pointing" cluster (1.6-2.04), nowhere near
-# INDEX_CURL_CLOSE (0.95). It is a transient pinch2_ratio dip during
-# ordinary pointing motion with no connection to curling at all, so it is
-# structurally outside what "ignore pinch while curled" can fix -- the
-# same class of pre-existing PINCH_CLOSE/PINCH2_CLOSE-vs-clutch-motion gap
-# flagged as a blocking finding in curl-calibration-report.md, not
-# reintroduced or worsened by this change. Asserting zero total intents
-# here would be false and was not weakened to something misleadingly
-# close to it; do not add that assertion without first recalibrating
-# PINCH_CLOSE/PINCH2_CLOSE against clutch.jsonl (out of this fix's scope).
+# UPDATE (2026-08-19 follow-up, PINCH_MIN_EXTENSION/PINCH2_MIN_EXTENSION):
+# the NOTE that used to sit here recorded that clutch.jsonl still produced
+# one spurious Click(2), at t=1.628s (index_curl_ratio=1.948), and asserted
+# it was "a transient pinch2_ratio dip during ordinary pointing motion with
+# no connection to curling at all" -- structurally outside what the
+# curl-gate above could fix. That diagnosis was wrong: at that exact frame
+# middle_curl_ratio=0.966, well below PINCH2_MIN_EXTENSION (1.10) -- the
+# middle finger itself was genuinely curled at that moment, just not the
+# index finger the old curl-gate watches. The extension gate added below
+# (config.py's PINCH_MIN_EXTENSION comment) catches it, along with every
+# other spurious press in this recording: replaying clutch.jsonl now
+# produces zero ButtonDown, ButtonUp, or Click(2) of any kind -- see
+# test_clutch_recording_never_ends_with_the_button_stuck_down below, which
+# pins the exact count instead of the "at least one, but matched" property
+# it used to.
 def test_clutch_recording_produces_no_press_on_a_curled_frame():
     """The core of the fix, pinned at the mechanism, not just an aggregate
     count. In recordings/clutch.jsonl every one of the 124 curled frames
@@ -259,20 +254,31 @@ def test_clutch_recording_produces_no_press_on_a_curled_frame():
 
 
 def test_clutch_recording_never_ends_with_the_button_stuck_down():
-    """The safety property this fix exists for. Before it,
-    recordings/clutch.jsonl left the state machine stuck in PRESSED: a
+    """The safety property the 2026-08-11 curl-gate fix exists for. Before
+    it, recordings/clutch.jsonl left the state machine stuck in PRESSED: a
     spurious pinch reading during a curl fired ButtonDown at t=14.208s,
     never matched by a ButtonUp before the recording ended -- a stuck
-    mouse button. Curl is now evaluated before pinch every frame, and an
+    mouse button. Curl is evaluated before pinch every frame, and an
     already-open button is safety-released (ButtonUp) the instant curl
-    engages, so every ButtonDown in this recording must now be matched by
-    a ButtonUp.
+    engages, so every ButtonDown in this recording must be matched by a
+    ButtonUp -- this holds regardless of how many presses fire, so it is
+    pinned independently of the exact-zero count below.
+
+    That count used to be "at least one" -- this recording used to still
+    produce a couple of spurious presses even after the curl-gate fix (see
+    the UPDATE note above test_clutch_recording_produces_no_press_on_a_
+    curled_frame). The 2026-08-19 extension gate (PINCH_MIN_EXTENSION /
+    PINCH2_MIN_EXTENSION, see config.py) eliminates the rest of them: this
+    recording now produces zero ButtonDown, ButtonUp, and Click(2) events
+    of any kind.
     """
     out = _replay("clutch")
     downs = [i for i in out if isinstance(i, ButtonDown)]
     ups = [i for i in out if isinstance(i, ButtonUp)]
-    assert len(downs) == len(ups)
-    assert len(downs) >= 1  # the fixture does contain the spurious press this guards
+    clicks = [i for i in out if isinstance(i, Click)]
+    assert len(downs) == len(ups)  # never stuck, regardless of count
+    assert downs == []
+    assert clicks == []
 
 
 def test_a_pinch_never_reads_as_a_curl():

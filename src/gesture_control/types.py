@@ -28,6 +28,7 @@ class Features:
     pinch_ratio: float
     pinch2_ratio: float
     index_curl_ratio: float
+    middle_curl_ratio: float
     thumb_tuck_ratio: float
     fingers_up: tuple[bool, bool, bool, bool]
     palm_facing: bool

@@ -38,6 +38,39 @@ PINCH_OPEN = 0.45
 PINCH2_CLOSE = 0.30
 PINCH2_OPEN = 0.40
 
+# A pinch requires the pinching finger to be reasonably EXTENDED, not
+# merely to have its tip near the thumb. Curling a finger brings its tip
+# toward the palm, where the thumb rests, so tip proximity alone reads a
+# partial curl as a press even when the fingers never touch. Finger shape
+# separates them cleanly: measured over frames read as pinched, genuine
+# pinches never fall below 1.25 index extension (min across all three
+# pinch recordings) while deliberate curling reaches 0.69. At these
+# values all 253 genuine pinch frames are kept and 126 curl-induced false
+# frames are rejected -- the discriminator costs nothing.
+#
+# The middle-finger figures are the same measurement on the same
+# recordings: 1.22 is the lowest middle extension seen on any genuine
+# middle-channel close (in recordings/middle_pinch.jsonl; the other two
+# recordings never close the middle channel at all). Both thresholds below
+# sit slightly under their respective measured genuine minima (1.25 index,
+# 1.22 middle) to leave margin for hand orientations not represented in
+# the recordings, while both remain far above the curled values (0.69
+# index, 0.54 middle) they exist to reject.
+#
+# Applies to the CLOSE transition only (see state_machine.py's
+# _update_pinch): a pinch already held must not release just because the
+# finger flexes slightly below these values, which would drop a button
+# the user is still actively holding -- the open thresholds above
+# (PINCH_OPEN / PINCH2_OPEN) are unaffected by this pair.
+#
+# PINCH_MIN_EXTENSION == INDEX_CURL_OPEN (1.20) is not a coincidence: see
+# INDEX_CURL_CLOSE's comment below for why this makes the curl-gate
+# fully redundant for suppressing new index-channel closes specifically,
+# while still leaving it load-bearing for two other things it does that
+# this gate does not.
+PINCH_MIN_EXTENSION = 1.20
+PINCH2_MIN_EXTENSION = 1.10
+
 ARM_DWELL_S = 0.300
 DISARM_S = 0.500
 HAND_SCALE_MIN = 0.08
@@ -70,6 +103,37 @@ INDEX_CURL_OPEN = 1.20
 # pinch-containing fixtures (374 genuine pinch frames total), the lowest
 # index_curl_ratio seen during any real pinch is 1.03 -- comfortably above
 # INDEX_CURL_CLOSE -- so no genuine pinch is ever suppressed by this rule.
+#
+# Partially redundant with PINCH_MIN_EXTENSION above (2026-08-19 follow-up).
+# This rule only ever suppressed a FULL clutch curl (index_curl_ratio below
+# 0.95, hysteresis-latched up to 1.20); a partial curl -- one that never
+# drops that low -- was not caught, and the user's "even a little closer
+# and it presses" report was exactly that gap. PINCH_MIN_EXTENSION,
+# calibrated to 1.20 == INDEX_CURL_OPEN, closes it: whenever `_curled` is
+# latched True, index_curl_ratio is by definition at or below
+# INDEX_CURL_OPEN, so it also fails PINCH_MIN_EXTENSION's `> 1.20` check --
+# meaning the extension gate now blocks every NEW index-channel close this
+# rule used to block, plus the partial-curl cases it never could. So this
+# rule is redundant for that one purpose (gating new index-channel closes)
+# and could be dropped for it alone.
+#
+# It is NOT redundant overall, and must stay, because it does two things
+# PINCH_MIN_EXTENSION does not:
+#   1. It also blocks the MIDDLE channel while the index is curled. The
+#      extension gate checks each channel against its own finger's curl
+#      ratio only -- an index curl (self._curled True) does not, by
+#      itself, fail PINCH2_MIN_EXTENSION, so a genuine middle-finger click
+#      performed while the index happens to be curled would otherwise
+#      pass. This rule still suppresses it.
+#   2. It force-releases an already-open button the instant curl engages
+#      (see state_machine.py's PRESSED handling). PINCH_MIN_EXTENSION
+#      applies to the CLOSE transition only, by design (an ordinary press
+#      must not drop just because the finger flexes) -- it has no opinion
+#      on release, so this rule is the only thing that still safety-releases
+#      a held pinch when a curl begins mid-press.
+# Both are exercised by tests -- see test_curling_while_pressed_releases_
+# the_button_and_freezes and test_curling_ignores_a_spurious_pinch_reading
+# in test_state_machine.py -- so do not remove this rule.
 
 # Slow-movement reach: hand-sweep pixels = BASE_GAIN_PX * ACCEL_MIN.
 # Previous tuning (1600 * 0.35 = 560 px) was insufficient for 1470 px display:

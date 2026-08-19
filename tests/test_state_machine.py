@@ -6,17 +6,21 @@ from gesture_control.state_machine import State, StateMachine
 from gesture_control.types import ButtonDown, ButtonUp, Click, Features, Move, Point2, Scroll, Space
 
 
-def feat(t, pinch=0.9, pinch2=0.9, curl=1.71, tuck=config.THUMB_TUCK_MAX - 0.10,
+def feat(t, pinch=0.9, pinch2=0.9, curl=1.71, midcurl=1.88, tuck=config.THUMB_TUCK_MAX - 0.10,
          fingers=(True, True, True, True), palm=True,
          ref=(0.5, 0.5), scale=0.20, present=True):
     """`curl` defaults to 1.71, the measured open-hand median (config.py) --
-    well above INDEX_CURL_OPEN, so tests that don't care about the clutch
-    never accidentally freeze.
+    well above INDEX_CURL_OPEN and PINCH_MIN_EXTENSION, so tests that don't
+    care about the clutch or the extension gate never accidentally freeze
+    or suppress a pinch. `midcurl` defaults to 1.88, the analogous measured
+    open-hand median for the middle finger (see features.py's _ABSENT
+    comment) -- well above PINCH2_MIN_EXTENSION for the same reason.
 
     `tuck` defaults comfortably under THUMB_TUCK_MAX (tucked), so tests that
     don't care about the scroll thumb gate never accidentally block it."""
     return Features(
-        pinch_ratio=pinch, pinch2_ratio=pinch2, index_curl_ratio=curl, thumb_tuck_ratio=tuck,
+        pinch_ratio=pinch, pinch2_ratio=pinch2, index_curl_ratio=curl,
+        middle_curl_ratio=midcurl, thumb_tuck_ratio=tuck,
         fingers_up=fingers, palm_facing=palm,
         hand_scale=scale, cursor_ref=Point2(*ref), t=t, present=present,
     )
@@ -365,39 +369,122 @@ def test_curling_ignores_a_spurious_pinch_reading_while_already_frozen():
 
 
 def test_genuine_pinch_still_opens_when_index_not_curled():
-    """Pins the fix against over-suppression. BETWEEN sits inside the
-    hysteresis band, well above INDEX_CURL_CLOSE, matching the real
-    index_curl_ratio range measured during genuine pinches (1.03-1.39
-    across all five pinch-containing fixtures -- see config.py). At this
-    value the index reads as not-curled, so a pinch must still open
-    PRESSED exactly as it did before this fix."""
+    """Pins the fix against over-suppression. UNCURLED sits above
+    INDEX_CURL_OPEN, matching the real index_curl_ratio range measured
+    during genuine ARMED index-channel presses (1.33-1.54 across all five
+    pinch-containing fixtures, filtered to actual ButtonDown events -- see
+    config.py's PINCH_MIN_EXTENSION comment). At this value the index reads
+    as extended, so a pinch must still open PRESSED.
+
+    This test previously used `curl=BETWEEN` (the hysteresis band, 0.95-
+    1.20) to prove the ORIGINAL curl-gate fix didn't over-suppress. That is
+    no longer the right value: PINCH_MIN_EXTENSION (2026-08-19) is
+    calibrated to equal INDEX_CURL_OPEN exactly (both 1.20), which closes
+    the entire hysteresis-band-still-opens window on purpose -- see
+    config.py's INDEX_CURL_CLOSE comment on why the two rules now overlap
+    for the index channel. No real armed press in any of the five
+    recordings ever measures index_curl_ratio below 1.33, so nothing in
+    that band represents an actual genuine press being lost.
+    """
     sm = StateMachine()
     t = arm(sm)
-    out = sm.update(feat(t, pinch=0.2, curl=BETWEEN))
+    out = sm.update(feat(t, pinch=0.2, curl=UNCURLED))
     assert out == [ButtonDown()]
     assert sm.state is State.PRESSED
 
 
 def test_releasing_an_ordinary_pinch_never_leaves_the_cursor_frozen():
-    """Traces the hysteresis-band concern raised while calibrating
-    INDEX_CURL_CLOSE/OPEN: a genuine pinch measures index_curl_ratio in the
-    1.03-1.39 range (see config.py) -- below INDEX_CURL_OPEN but above
-    INDEX_CURL_CLOSE, i.e. inside the hysteresis band, for its entire
-    duration. `curl=BETWEEN` here stands in for that band. Because curled
-    only latches True below CLOSE, and this ratio never goes that low, the
-    clutch's `curled` flag stays False throughout the press and release, so
-    TRACKING (never FROZEN) is what follows the ButtonUp. Confirmed against
-    real data too: the lowest index_curl_ratio recorded during any pinch,
-    across all five pinch-containing fixtures, is 1.03 -- above CLOSE
-    (0.95) -- so this is not just a synthetic case.
+    """A genuine press-then-release at a curl value that never gets near
+    INDEX_CURL_CLOSE must release straight to TRACKING, never FROZEN.
+
+    Previously used `curl=BETWEEN` (the hysteresis band) to make the same
+    point -- see test_genuine_pinch_still_opens_when_index_not_curled above
+    for why that value no longer opens a pinch at all post-2026-08-19 and
+    was replaced with UNCURLED here too. The property under test
+    (`curled` never latches True, so release goes to TRACKING) holds
+    identically at UNCURLED, since UNCURLED is even further from
+    INDEX_CURL_CLOSE than BETWEEN was.
     """
     sm = StateMachine()
     t = arm(sm)
-    sm.update(feat(t, pinch=0.2, curl=BETWEEN))
+    sm.update(feat(t, pinch=0.2, curl=UNCURLED))
     assert sm.state is State.PRESSED
     out = sm.update(feat(t + 0.05, pinch=0.9, curl=BETWEEN))
     assert out == [ButtonUp()]
     assert sm.state is State.TRACKING
+
+
+# --- PINCH_MIN_EXTENSION / PINCH2_MIN_EXTENSION: a curled finger must not
+# --- press, even at a tip-to-thumb distance that reads as a pinch ---
+#
+# Curling a finger brings its tip toward the palm, where the thumb also
+# rests, so tip-to-thumb proximity alone cannot tell a genuine pinch from a
+# partial curl (see config.py's PINCH_MIN_EXTENSION comment). Applies to the
+# CLOSE transition only -- an already-held pinch must not release just
+# because the finger flexes slightly, see
+# test_held_pinch_does_not_release_when_finger_flexes_below_extension
+# below.
+#
+# NOT_EXTENDED sits strictly between INDEX_CURL_CLOSE and PINCH_MIN_EXTENSION
+# so these tests exercise the extension gate specifically, not the
+# pre-existing curl-gates-pinch rule (which would already suppress a pinch
+# below INDEX_CURL_CLOSE, entering FROZEN instead of just failing to press).
+NOT_EXTENDED = (config.INDEX_CURL_CLOSE + config.PINCH_MIN_EXTENSION) / 2
+EXTENDED = config.PINCH_MIN_EXTENSION + 0.05
+NOT_EXTENDED2 = config.PINCH2_MIN_EXTENSION - 0.05
+EXTENDED2 = config.PINCH2_MIN_EXTENSION + 0.05
+
+
+def test_curled_index_at_pinch_distance_does_not_press():
+    """Same tip-to-thumb distance as a genuine index click (pinch=0.2, well
+    under PINCH_CLOSE), but the index finger itself is not extended -- a
+    curl-induced false pinch, not a press."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, pinch=0.2, curl=NOT_EXTENDED))
+    assert out == []
+    assert sm.state is State.TRACKING
+
+
+def test_extended_index_at_the_same_pinch_distance_does_press():
+    """Same tip-to-thumb distance, finger extended: a genuine press."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, pinch=0.2, curl=EXTENDED))
+    assert out == [ButtonDown()]
+    assert sm.state is State.PRESSED
+
+
+def test_curled_middle_at_pinch_distance_does_not_click():
+    """Same standard for the middle finger and Click(2)."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, pinch2=0.2, midcurl=NOT_EXTENDED2))
+    assert out == []
+    assert sm.state is State.TRACKING
+
+
+def test_extended_middle_at_the_same_pinch_distance_does_click():
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, pinch2=0.2, midcurl=EXTENDED2))
+    assert out == [Click(2)]
+    assert sm.state is State.TRACKING
+
+
+def test_held_pinch_does_not_release_when_finger_flexes_below_extension_threshold():
+    """The extension gate governs the CLOSE transition only. A pinch already
+    held must not be released just because the finger flexes slightly below
+    PINCH_MIN_EXTENSION -- that would be a stuck-button-adjacent failure in
+    reverse (dropping a button the user is still actively holding)."""
+    sm = StateMachine()
+    t = arm(sm)
+    down = sm.update(feat(t, pinch=0.2, curl=EXTENDED))
+    assert down == [ButtonDown()]
+    assert sm.state is State.PRESSED
+    out = sm.update(feat(t + 0.05, pinch=0.2, curl=NOT_EXTENDED))
+    assert out == []  # no ButtonUp -- still held despite flexing
+    assert sm.state is State.PRESSED
 
 
 # --- Scroll (unchanged behaviour, new resting-state name) ---

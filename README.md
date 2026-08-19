@@ -72,6 +72,30 @@ signals aren't independent, because holding through a spurious pinch
 reading is exactly the stuck-button failure this project guards against
 everywhere else.
 
+**A pinch requires an extended finger, not just tip proximity (2026-08-19
+follow-up).** Users reported that bringing a finger "just a little closer to
+the palm" pressed the button even when it never touched the thumb. The cause:
+a pinch was detected purely from `dist(thumb_tip, finger_tip) / hand_scale`
+crossing a threshold. Curling a finger brings its tip toward the palm, where
+the thumb also rests, so that distance shrinks without the two ever
+touching — the general case of the same geometry that made curl and pinch
+mutually exclusive for the clutch above, just without a full clutch-level
+curl to trigger that gate. Tip-to-thumb distance alone cannot tell a genuine
+pinch from a partial curl; finger *shape* can. Measured as fingertip-to-wrist
+distance over `hand_scale` (the same quantity as `index_curl_ratio`, plus the
+new `middle_curl_ratio` for the middle finger) across frames the code reads
+as pinched: genuine pinches never fall below 1.25 index / 1.22 middle
+extension, while curling reaches as low as 0.69 index / 0.54 middle. A pinch
+may now only *close* when its finger clears `PINCH_MIN_EXTENSION` (index) or
+`PINCH2_MIN_EXTENSION` (middle) — see "Tuning" below for the exact values and
+margins. This gates closing only: a pinch already held never releases just
+because the finger flexes slightly, so a genuine drag can't drop the button
+mid-motion. Against the recordings: `live_clicks.jsonl` and
+`middle_pinch.jsonl` keep every genuine press unchanged, and
+`recordings/clutch.jsonl` — which used to leave 2 `ButtonDown`/`ButtonUp`
+pairs and 2 spurious `Click(2)`s even after the curl-gate fix — now replays
+to zero button or click events of any kind.
+
 **Scroll thumb gate (2026-08-19).** The user reported spurious scrolling
 when they meant to double-click: opening the middle finger to pinch it to
 the thumb passes through the scroll finger posture (index and middle
@@ -243,6 +267,26 @@ genuinely pinching (see `PINCH_CLOSE`/`PINCH2_CLOSE` above), and a pinch
 misread as a curl would freeze the cursor mid-drag, so `INDEX_CURL_OPEN =
 1.20` stays below the pointing cluster while never touching the pinch floor.
 
+`PINCH_MIN_EXTENSION` / `PINCH2_MIN_EXTENSION` (2026-08-19 follow-up) require
+the pinching finger to be reasonably extended before a pinch may *close* —
+tip-to-thumb proximity alone reads a partial curl as a press (see "Gestures"
+above). Calibrated against frames read as pinched across `live_clicks.jsonl`,
+`five_clicks.jsonl`, and `middle_pinch.jsonl`: the lowest index extension on
+any genuine index-channel close is 1.25, and the lowest middle extension on
+any genuine middle-channel close is 1.22. Both thresholds (`1.20` and `1.10`)
+sit slightly below those measured floors, leaving margin for hand
+orientations not in the recordings, while staying far above the curled
+values (0.69 index, 0.54 middle) they exist to reject. `PINCH_MIN_EXTENSION`
+is deliberately set equal to `INDEX_CURL_OPEN` (both `1.20`): this makes it
+strictly subsume `INDEX_CURL_CLOSE`/`INDEX_CURL_OPEN` for the one purpose of
+blocking a *new* index-channel pinch close, since the index curl-latch can
+only be active at or below `INDEX_CURL_OPEN`. The curl-gate is not fully
+redundant, though, and was kept: it also blocks the *middle* channel while
+the index is curled (the extension gate only checks each channel against its
+own finger), and it force-releases an already-open button the instant a curl
+begins mid-press (the extension gate only governs closing, never releasing,
+so a genuine drag can't be dropped by a finger flexing slightly).
+
 `THUMB_TUCK_MAX` (2026-08-19) governs *entering* the scroll thumb gate:
 scroll requires `thumb_tuck_ratio` (thumb tip to pinky knuckle,
 scale-normalized) below this value, in addition to the finger posture, so
@@ -331,14 +375,14 @@ above gets a chance to run.
   active, so Control+click reads as a right-click. `QuartzActuator._post_mouse`
   now explicitly clears flags (`CGEventSetFlags(ev, 0)`) on every mouse event
   it posts to prevent this
-- `recordings/clutch.jsonl` (point/curl only, no pinching) still replays to
-  one spurious `Click(2)`, at t=1.628s, where `index_curl_ratio` reads 1.936
-  — deep in the pointing cluster, nowhere near a curl. It is a transient
-  `pinch2_ratio` dip during ordinary pointing motion, unconnected to
-  curling, so the curl/pinch mutual-exclusivity fix (see "Gestures" above)
-  cannot address it. `PINCH_CLOSE`/`PINCH2_CLOSE` were never calibrated
-  against sustained hand motion of the kind in this recording; needs its own
-  investigation. The previously-reported stuck button from this same
-  recording (an unreleased `ButtonDown` at t=14.208s, where the pinch
-  reading was spurious *because* the index was curled) is fixed by the
-  mutual-exclusivity change and no longer occurs
+- `recordings/clutch.jsonl` (point/curl only, no pinching) now replays to
+  zero button or click events of any kind, as of the 2026-08-19
+  extension-gate follow-up (see "Gestures" and "Tuning" above). It
+  previously left 2 `ButtonDown`/`ButtonUp` pairs and 2 spurious `Click(2)`s
+  even after the original curl/pinch mutual-exclusivity fix, including one
+  at t=1.628s that had been diagnosed as "unconnected to curling" — that
+  diagnosis was wrong: at that frame `middle_curl_ratio` was 0.966, i.e. the
+  middle finger itself was genuinely curled, just not the index finger the
+  original curl-gate watches. The previously-reported stuck button from this
+  same recording (an unreleased `ButtonDown` at t=14.208s) was fixed earlier
+  by the mutual-exclusivity change and remains fixed

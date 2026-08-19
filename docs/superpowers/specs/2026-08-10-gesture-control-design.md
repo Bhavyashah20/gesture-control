@@ -3,7 +3,8 @@
 Date: 2026-08-10
 Status: Approved and implemented; amended 2026-08-11 (direct-manipulation
 redesign; stability fixes); amended 2026-08-19 (scroll acceleration; scroll
-thumb gate; scroll thumb gate made asymmetric)
+thumb gate; scroll thumb gate made asymmetric; pinch requires an extended
+finger)
 
 ## Amendment (2026-08-11): stability fixes — scroll magnitude, jitter, cursor reference
 
@@ -209,6 +210,75 @@ amendment has no mechanism to affect that, because the machine is never in
 in pursuit of removing these 4 pairs — see the follow-up task report for
 the full frame-by-frame trace this conclusion is based on.
 
+## Amendment (2026-08-19): a pinch requires an extended finger
+
+The user reported: "even if i bring my index or middle finger just a little
+closer to the palm it presses even if not touching the thumb." The cause is
+the same geometry that motivated the curl/pinch mutual-exclusivity rule (see
+"The clutch: freezing the cursor" below), in its more general form: a pinch
+was detected purely from tip-to-thumb distance
+(`pinch_ratio`/`pinch2_ratio`) crossing a threshold, and curling a finger
+brings its tip toward the palm, where the thumb also rests, shrinking that
+distance without the two ever touching. The curl-gate below only ever
+caught the *full* clutch curl (`index_curl_ratio` below `INDEX_CURL_CLOSE`);
+a partial curl that never dropped that low was not caught, and that gap is
+exactly the reported symptom.
+
+Two other discriminators were tried and rejected: thumb-tuck position
+overlaps too much between genuine pinches and curls, and the ratio of
+thumb-to-tip against palm-to-tip is actually *lower* during curling (0.26)
+than during genuine clicks (0.35), because a curled fingertip really is
+close to the thumb.
+
+**The fix is finger shape, not tip proximity.** A pinch keeps the finger
+relatively straight and meets the thumb at the tip; a curl folds the finger
+at its joints — the same signal `index_curl_ratio` already measures
+(fingertip-to-wrist distance over `hand_scale`), extended with a new,
+identically-computed `middle_curl_ratio` for the middle finger (see "Feature
+extraction" above). Measured across frames the code reads as pinched:
+
+| fixture | index: min / p10 / median | middle: min / p10 / median |
+|---|---|---|
+| `live_clicks` | 1.32 / 1.35 / 1.42 | 1.60 / 1.68 / 1.76 |
+| `five_clicks` | 1.31 / 1.35 / 1.40 | 1.76 / 1.79 / 1.81 |
+| `middle_pinch` | 1.25 / 1.29 / 1.66 | 1.22 / 1.33 / 1.43 |
+| `clutch` (curling) | 0.69 / 0.78 / 1.72 | 0.54 / 0.57 / 0.64 |
+
+Genuine pinches never fall below 1.25 index / 1.22 middle extension (the
+minimum across the three genuine-pinch recordings, on the channel that
+actually closed); deliberate curling reaches as low as 0.69 index / 0.54
+middle. `PINCH_MIN_EXTENSION = 1.20` and `PINCH2_MIN_EXTENSION = 1.10` sit
+slightly below those measured floors, for margin on hand orientations not
+represented in the recordings — see "Tuning parameters" below. A pinch may
+now only *close* when the closing finger's curl ratio clears the
+corresponding threshold; the transition table above reflects this. The gate
+applies to closing only, never to releasing: a pinch already held does not
+drop just because the finger flexes slightly below the threshold, which
+would be a stuck-button-adjacent failure in reverse.
+
+**Interaction with the curl-gate.** `PINCH_MIN_EXTENSION` is set equal to
+`INDEX_CURL_OPEN` (both 1.20) on purpose: since the curl-latch (`_curled`)
+can only be active at or below `INDEX_CURL_OPEN`, this makes the extension
+gate strictly subsume the curl-gate for the one purpose of blocking a *new*
+index-channel pinch close — every case the curl-gate blocked on that front,
+the extension gate blocks too, plus the partial-curl cases the curl-gate
+never could. The curl-gate is not fully redundant, though, and stays: it
+also blocks the *middle* channel while the index is curled (the extension
+gate checks each channel only against its own finger's ratio, so an index
+curl alone does not fail `PINCH2_MIN_EXTENSION`), and it force-releases an
+already-open button the instant a curl begins mid-press — a case the
+extension gate structurally cannot cover, since it governs closing only.
+
+**Verified against every fixture.** `live_clicks.jsonl` (12 presses) and
+`middle_pinch.jsonl` (9 `Click(2)`s, 1 press) are unchanged. `clutch.jsonl`
+— which previously left 2 `ButtonDown`/`ButtonUp` pairs and 2 spurious
+`Click(2)`s even after the curl-gate fix, including one at t=1.628s
+previously diagnosed as "unconnected to curling" (that diagnosis was wrong:
+`middle_curl_ratio` at that frame is 0.966, well below
+`PINCH2_MIN_EXTENSION` — the middle finger itself was curled) — now replays
+to zero button or click events of any kind. `reaching_past.jsonl` and
+`talking_hands.jsonl` remain at zero intents.
+
 ## Amendment (2026-08-11): direct manipulation replaces trackpad mimicry
 
 The original model (below, largely unchanged) mapped a pinch to two
@@ -374,6 +444,7 @@ class Features:
     pinch_ratio: float           # scale-invariant thumb-index distance
     pinch2_ratio: float          # scale-invariant thumb-middle distance
     index_curl_ratio: float      # scale-invariant index-tip-to-wrist distance
+    middle_curl_ratio: float     # scale-invariant middle-tip-to-wrist distance
     thumb_tuck_ratio: float      # scale-invariant thumb-tip-to-pinky-MCP distance
     fingers_up: tuple[bool, ...] # index, middle, ring, pinky
     palm_facing: bool            # palm oriented toward camera
@@ -411,7 +482,15 @@ independent pinch channel, not a derivative of `pinch_ratio`.
 fingertip to wrist. Drives the clutch (see "The clutch: freezing the
 cursor" below): curling the index finger toward the palm shrinks this
 ratio. `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` are calibrated against a
-dedicated recording — see "Tuning parameters" for the numbers.
+dedicated recording — see "Tuning parameters" for the numbers. Also drives
+the index side of the pinch-close extension gate — see "Amendment
+(2026-08-19): a pinch requires an extended finger" below.
+
+**`middle_curl_ratio`** = ‖landmark[12] − landmark[0]‖ / `hand_scale`,
+middle fingertip to wrist — computed identically to `index_curl_ratio`,
+just for the middle finger. Added 2026-08-19 alongside the extension gate
+below; there is no middle-finger clutch, so this ratio exists solely to
+drive the middle side of that gate.
 
 **`thumb_tuck_ratio`** = ‖landmark[4] − landmark[17]‖ / `hand_scale`, thumb
 tip to pinky knuckle. Small means the thumb is tucked across the palm.
@@ -502,8 +581,8 @@ drag. All states fall back to `Disarmed` when the gate drops; the gate itself
 | `Frozen` | `Tracking` | index uncurls: `index_curl_ratio` > `INDEX_CURL_OPEN` |
 | `Tracking` | `Scroll` | index extended, middle extended, ring not extended, thumb tucked (`thumb_tuck_ratio` < `THUMB_TUCK_MAX`), 200 ms (pinky ignored) — `_can_enter_scroll()` |
 | `Tracking` | `Tracking` | horizontal sweep → emit `Space` |
-| `Tracking` or `Frozen` | `Pressed` | index not curled, pinch closes (`pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30, either finger) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
-| `Tracking` or `Frozen` | (unchanged) | index not curled, pinch closes and the **middle** channel is the closer one; emit `Click(2)`, no state change |
+| `Tracking` or `Frozen` | `Pressed` | index not curled, pinch closes (`pinch_ratio` < 0.35 with `index_curl_ratio` > `PINCH_MIN_EXTENSION`, OR `pinch2_ratio` < 0.30 with `middle_curl_ratio` > `PINCH2_MIN_EXTENSION`) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
+| `Tracking` or `Frozen` | (unchanged) | index not curled, pinch closes (same extension-gated condition) and the **middle** channel is the closer one; emit `Click(2)`, no state change |
 | `Pressed` | `Tracking` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); emit `ButtonUp` |
 | `Pressed` | `Frozen` | index curls while a pinch is open: `index_curl_ratio` < `INDEX_CURL_CLOSE`; emit `ButtonUp` first (see "The clutch: freezing the cursor" below) |
 | `Scroll` | `Tracking` | scroll posture lost: finger shape changes, or thumb clears `THUMB_TUCK_RELEASE` (`thumb_tuck_ratio` >= 0.95, looser than the 0.70 entry bar — see "Amendment (2026-08-19): scroll thumb gate made asymmetric") — `_can_stay_in_scroll()` returns false |
@@ -723,17 +802,18 @@ across all five pinch-containing fixtures, is 1.03, so `INDEX_CURL_OPEN =
 never approaching the pinch floor (so a pinch is never misread as a curl).
 See "Tuning parameters" below.
 
-**Known gap, unrelated to curl:** `recordings/clutch.jsonl` still replays
-with one spurious `Click(2)`, at t=1.628s, where `index_curl_ratio` reads
-1.936 — deep in the pointing cluster, nowhere near `INDEX_CURL_CLOSE`. It is
-a transient `pinch2_ratio` dip during ordinary pointing motion with no
-connection to curling, so "ignore pinch while curled" cannot and does not
-address it; it is the same class of gap flagged in
-`.superpowers/sdd/2026-08-10-gesture-control/curl-calibration-report.md`
-("Blocking finding"), now narrowed from two spurious events (one of them a
-stuck button) to this one, non-stuck-button case. Fixing it would mean
-recalibrating `PINCH_CLOSE`/`PINCH2_CLOSE` against sustained hand motion —
-out of scope here; see the README's "Known limitations".
+**Former known gap, closed 2026-08-19:** `recordings/clutch.jsonl` used to
+still replay with spurious presses even after this fix — 2 `ButtonDown`/
+`ButtonUp` pairs and 2 `Click(2)`s, including one at t=1.628s
+(`index_curl_ratio` = 1.948, deep in the pointing cluster) previously
+diagnosed here as "a transient `pinch2_ratio` dip during ordinary pointing
+motion with no connection to curling." That diagnosis was incomplete: at
+that same frame `middle_curl_ratio` = 0.966 — the middle finger itself was
+genuinely curled at that moment, just not the index finger this section's
+gate watches. See "Amendment (2026-08-19): a pinch requires an extended
+finger" above for the fix (`PINCH_MIN_EXTENSION` / `PINCH2_MIN_EXTENSION`),
+which catches this and every other remaining spurious event in this
+recording: it now replays to zero button or click events of any kind.
 
 ### Hysteresis
 
@@ -918,7 +998,8 @@ runtime.
 
 - `features`: pinch ratio is invariant to hand scale and to rotation; `pinch2_ratio`
   is likewise scale-invariant and independent of the index pinch; `index_curl_ratio`
-  is likewise scale-invariant and independent of the pinch; finger
+  is likewise scale-invariant and independent of the pinch; `middle_curl_ratio`
+  (added 2026-08-19) is the same three properties, for the middle finger; finger
   extension is correct for known hand poses; mirroring is applied exactly once
   (now: to each of the four MCP knuckles before they are averaged, not to a
   single landmark); `cursor_ref` is the mean of landmarks 5/9/13/17 and barely
@@ -930,11 +1011,15 @@ runtime.
   resume; curl and pinch are mutually exclusive -- curl is evaluated before
   pinch every frame, the pinch channels are ignored while curled, and an
   already-open button is released, not held, the instant a curl engages),
-  the stuck-button watchdog, and the jitter deadzone accumulator (consistent
-  sub-threshold motion accumulates and eventually emits its full total;
-  alternating sub-threshold motion cancels and emits nothing; the residual
-  applies identically during a drag; it resets on disarm and on entering
-  `Frozen`)
+  the pinch-close extension gate (added 2026-08-19: a tip-close-to-thumb
+  reading with the finger curled below `PINCH_MIN_EXTENSION` /
+  `PINCH2_MIN_EXTENSION` does not press or click; the same tip distance with
+  the finger extended does; a pinch already held does not release when the
+  finger flexes slightly below the threshold), the stuck-button watchdog,
+  and the jitter deadzone accumulator (consistent sub-threshold motion
+  accumulates and eventually emits its full total; alternating sub-threshold
+  motion cancels and emits nothing; the residual applies identically during
+  a drag; it resets on disarm and on entering `Frozen`)
 - `filters`: One Euro converges on constant input; gain curve is monotonic and
   respects its clamps
 
@@ -1016,14 +1101,18 @@ simplification made at the cost of losing that calibration work.
 unchanged and still calibrated against the same real recordings described
 below their original entries. `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` are
 calibrated against a dedicated recording, `recordings/clutch.jsonl` — see
-"The clutch: freezing the cursor" above. All other parameters (gate, gain,
-scroll, swipe, filter) are unchanged by this redesign.
+"The clutch: freezing the cursor" above. `PINCH_MIN_EXTENSION` /
+`PINCH2_MIN_EXTENSION` (added 2026-08-19) additionally gate the CLOSE
+transition on finger shape — see "Amendment (2026-08-19): a pinch requires
+an extended finger" above. All other parameters (gate, gain, scroll, swipe,
+filter) are unchanged by this redesign.
 
 | Parameter | Start | Governs |
 |---|---|---|
 | `PINCH_CLOSE` / `PINCH_OPEN` | 0.35 / 0.45 | index pinch detection (button down/up), with hysteresis |
 | `PINCH2_CLOSE` / `PINCH2_OPEN` | 0.30 / 0.40 | middle pinch (double-click) detection, with hysteresis |
 | `INDEX_CURL_CLOSE` / `INDEX_CURL_OPEN` | 0.95 / 1.20 | Clutch (freeze/resume) detection, with hysteresis. Calibrated against `recordings/clutch.jsonl`: `index_curl_ratio` is cleanly bimodal (curled 0.56-0.9, pointing 1.6-2.04), and 0.95 sits in the wide gap between. The upper bound is set by the pinch floor (1.03, across all pinch-containing fixtures), not by pointing, so a pinch is never misread as a curl |
+| `PINCH_MIN_EXTENSION` / `PINCH2_MIN_EXTENSION` | 1.20 / 1.10 | required finger extension (`index_curl_ratio` / `middle_curl_ratio`) for a pinch to *close* (added 2026-08-19) — see "Amendment (2026-08-19): a pinch requires an extended finger" above. Distinguishes a genuine pinch from a partial curl that merely brings the tip near the thumb without touching it. Measured floors across the three genuine-pinch recordings: 1.25 index, 1.22 middle; both thresholds sit slightly below for margin. `PINCH_MIN_EXTENSION` equals `INDEX_CURL_OPEN` on purpose, making it subsume the curl-gate for new index-channel closes specifically (see the amendment for what the curl-gate still does that this does not) |
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `BASE_GAIN_PX` | 2000 | cursor travel per hand movement; raised from 1600 to increase reach from 560 px to 1000 px per hand-sweep, enabling edge access on 1470 px display with index-curl clutch covering the rest; cost: hand tremor amplified |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.5 / 2.5 | precision floor vs. reach ceiling; ACCEL_MIN raised from 0.35 to 0.5 to increase slow-movement reach from 560 px to 1000 px per hand-sweep |

@@ -5,7 +5,7 @@ from gesture_control.features import extract
 from gesture_control.types import HandFrame, Point3
 
 
-def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None, tuck=None,
+def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None, midcurl=None, tuck=None,
               fingers=(True, True, True, True),
               left=False, offset=(0.0, 0.0), t=0.0,
               thumb_z=0.0, wrist_z=0.0):
@@ -53,6 +53,15 @@ def make_hand(scale=1.0, pinch=0.30, pinch2=None, curl=None, tuck=None,
         # so dist(wrist, index_tip) / hand_scale == curl exactly, independent
         # of `fingers`, `pinch`, and `pinch2`.
         put(8, 0.50, 0.60 - curl * 0.20)
+
+    if midcurl is not None:
+        # Placed directly above the wrist, at the requested distance ratio,
+        # overriding whatever the `fingers` loop (or `pinch2`) set for
+        # landmark 12 -- so dist(wrist, middle_tip) / hand_scale == midcurl
+        # exactly, independent of `fingers`, `pinch`, and `pinch2`. Applied
+        # after the `pinch2` override above so `midcurl` always wins if both
+        # are given (mirrors `curl` overriding landmark 8 after `fingers`).
+        put(12, 0.50, 0.60 - midcurl * 0.20)
 
     if tuck is not None:
         # Placed at a fixed offset from the (already-positioned) pinky MCP,
@@ -186,6 +195,34 @@ def test_index_curl_ratio_is_lower_when_curled_than_open():
     open_hand = extract(make_hand(curl=1.71))
     curled = extract(make_hand(curl=1.15))
     assert curled.index_curl_ratio < open_hand.index_curl_ratio
+
+
+def test_middle_curl_ratio_matches_wrist_to_middle_tip_distance():
+    f = extract(make_hand(midcurl=1.88))
+    assert math.isclose(f.middle_curl_ratio, 1.88, abs_tol=1e-6)
+
+
+def test_middle_curl_ratio_is_invariant_to_hand_scale():
+    near = extract(make_hand(scale=1.0, midcurl=1.88))
+    far = extract(make_hand(scale=0.5, midcurl=1.88))
+    assert math.isclose(near.middle_curl_ratio, far.middle_curl_ratio, abs_tol=1e-6)
+
+
+def test_middle_curl_ratio_is_lower_when_curled_than_open():
+    """dist(landmark[12], landmark[0]) / hand_scale must shrink as the middle
+    fingertip moves toward the wrist -- the signal PINCH2_MIN_EXTENSION
+    depends on (see config.py)."""
+    open_hand = extract(make_hand(midcurl=1.88))
+    curled = extract(make_hand(midcurl=0.60))
+    assert curled.middle_curl_ratio < open_hand.middle_curl_ratio
+
+
+def test_middle_curl_ratio_is_independent_of_pinch():
+    """Closing the index-thumb pinch (moving landmark 4) must not move
+    landmark 12, so middle_curl_ratio must not change with it."""
+    a = extract(make_hand(pinch=0.10, midcurl=1.88))
+    b = extract(make_hand(pinch=0.90, midcurl=1.88))
+    assert math.isclose(a.middle_curl_ratio, b.middle_curl_ratio, abs_tol=1e-6)
 
 
 def test_pinch_ratio_includes_depth_not_just_the_2d_projection():

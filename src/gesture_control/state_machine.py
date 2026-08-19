@@ -150,13 +150,30 @@ class StateMachine:
         index channel alone often also reads closed during a deliberate
         middle pinch.
 
+        Each channel's CLOSE transition additionally requires that channel's
+        finger to be reasonably extended (see config.py's
+        PINCH_MIN_EXTENSION comment): curling a finger brings its tip
+        toward the palm, where the thumb rests, so tip-to-thumb proximity
+        alone cannot tell a genuine pinch from a partial curl. This check
+        applies to closing only -- the release condition above is
+        untouched, so a pinch already held is never dropped just because
+        the finger flexes slightly below the extension threshold.
+
         Returns (closed, pressed_this_frame, released_this_frame).
         """
         if closed:
             if f.pinch_ratio > config.PINCH_OPEN and f.pinch2_ratio > config.PINCH2_OPEN:
                 return False, False, True
         else:
-            if f.pinch_ratio < config.PINCH_CLOSE or f.pinch2_ratio < config.PINCH2_CLOSE:
+            index_can_close = (
+                f.pinch_ratio < config.PINCH_CLOSE
+                and f.index_curl_ratio > config.PINCH_MIN_EXTENSION
+            )
+            middle_can_close = (
+                f.pinch2_ratio < config.PINCH2_CLOSE
+                and f.middle_curl_ratio > config.PINCH2_MIN_EXTENSION
+            )
+            if index_can_close or middle_can_close:
                 return True, True, False
         return closed, False, False
 

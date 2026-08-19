@@ -26,6 +26,17 @@ _ABSENT = Features(
     # comment) so an absent frame reads as "uncurled", not "curled" -- an
     # absent hand must never freeze the cursor via the curl path.
     index_curl_ratio=1.71,
+    # Matches the measured open-hand median for the middle finger across
+    # reaching_past/talking_hands/one_sweep/scroll_attempt (1.88, the same
+    # methodology as index_curl_ratio's 1.71 above, just for landmark 12
+    # instead of 8) so an absent frame reads as "not curled" on the middle
+    # channel too -- an absent hand must never satisfy PINCH2_MIN_EXTENSION
+    # (see config.py) by accident, nor fail it and mask a genuine reading.
+    # Like the index sentinel, this only matters if extract() is ever
+    # called on a present=False frame that reaches the pinch-close check;
+    # in practice the state machine disarms on present=False before either
+    # curl ratio is read, so this is belt-and-suspenders, not load-bearing.
+    middle_curl_ratio=1.88,
     # Matches the measured five_clicks median (see config.py's
     # THUMB_TUCK_MAX comment), the most "resting hand" of the recordings, so
     # an absent frame reads as "thumb not tucked" -- an absent hand must
@@ -92,8 +103,19 @@ def extract(frame: HandFrame) -> Features:
     pinch2 = _dist(pts[THUMB_TIP], pts[MIDDLE_TIP]) / scale
     # Index fingertip to wrist, scale-normalized. Drives the clutch (see
     # config.py's INDEX_CURL_CLOSE / INDEX_CURL_OPEN): curling the index
-    # toward the palm shrinks this ratio, freezing the cursor.
+    # toward the palm shrinks this ratio, freezing the cursor. Also drives
+    # the index side of the pinch-close extension gate (see config.py's
+    # PINCH_MIN_EXTENSION comment): a curled finger brings its tip near the
+    # thumb without ever touching it, so tip-to-thumb proximity alone
+    # cannot tell a genuine pinch from a partial curl -- this ratio can.
     index_curl = _dist(pts[WRIST], pts[INDEX_TIP]) / scale
+    # Middle fingertip to wrist, scale-normalized. Computed exactly like
+    # index_curl above but for the middle finger; drives the middle side of
+    # the same pinch-close extension gate (see config.py's
+    # PINCH2_MIN_EXTENSION comment). There is no middle-finger clutch --
+    # only the index channel drives FROZEN -- so this ratio exists solely
+    # for the extension gate.
+    middle_curl = _dist(pts[WRIST], pts[MIDDLE_TIP]) / scale
     # Thumb tip to pinky knuckle, scale-normalized. Small means the thumb is
     # tucked across the palm. Drives the scroll gate's thumb condition (see
     # config.py's THUMB_TUCK_MAX): required in addition to the finger
@@ -111,6 +133,7 @@ def extract(frame: HandFrame) -> Features:
         pinch_ratio=pinch,
         pinch2_ratio=pinch2,
         index_curl_ratio=index_curl,
+        middle_curl_ratio=middle_curl,
         thumb_tuck_ratio=thumb_tuck,
         fingers_up=fingers,
         palm_facing=_palm_facing(pts, frame.handedness),
