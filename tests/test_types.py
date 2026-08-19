@@ -45,3 +45,10 @@ def test_pinch2_thresholds_have_hysteresis_gap():
 
 def test_gate_dwells_are_asymmetric():
     assert config.DISARM_S > config.ARM_DWELL_S
+
+
+def test_thumb_tuck_thresholds_have_hysteresis_gap():
+    """THUMB_TUCK_MAX (strict, to enter scroll) must be stricter than
+    THUMB_TUCK_RELEASE (loose, to leave scroll) so the two cannot be set
+    inconsistently -- mirrors the gate's arm/sustain asymmetry."""
+    assert config.THUMB_TUCK_MAX < config.THUMB_TUCK_RELEASE

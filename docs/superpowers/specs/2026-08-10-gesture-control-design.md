@@ -3,7 +3,7 @@
 Date: 2026-08-10
 Status: Approved and implemented; amended 2026-08-11 (direct-manipulation
 redesign; stability fixes); amended 2026-08-19 (scroll acceleration; scroll
-thumb gate)
+thumb gate; scroll thumb gate made asymmetric)
 
 ## Amendment (2026-08-11): stability fixes — scroll magnitude, jitter, cursor reference
 
@@ -131,6 +131,83 @@ with the fixture not having been recorded with the thumb deliberately
 tucked. `middle_pinch.jsonl` and `live_clicks.jsonl` produce zero `Scroll`
 events, before and after. `reaching_past.jsonl` and `talking_hands.jsonl`
 continue to replay to zero intents.
+
+## Amendment (2026-08-19): scroll thumb gate made asymmetric
+
+The gate above used one shared predicate, `_is_scroll_posture()`, for both
+entering and leaving `Scroll`, with a single threshold `THUMB_TUCK_MAX`.
+That has a side effect: replaying `recordings/scroll_attempt.jsonl` showed
+that of the 260 frames in scroll posture, 65 have `thumb_tuck_ratio` drift
+back above `THUMB_TUCK_MAX` mid-gesture — a momentary, non-deliberate
+un-tuck, not the user reaching for a double-click. Under the shared
+threshold, each such frame dropped `Scroll` straight to `Tracking`, which
+(unlike `Scroll`) processes pinches — so a pinch reading during that
+momentary window could fire a click the user never intended. Measured: 4
+complete `ButtonDown`/`ButtonUp` pairs on this recording that did not occur
+before the original thumb-tuck gate existed.
+
+The fix mirrors the posture gate's own arm/sustain asymmetry (see "The
+posture gate" below): strict to enter, reluctant to leave. `_is_scroll_posture()`
+is replaced by two predicates built from one shared finger-shape helper so
+entry and exit cannot drift apart on the finger condition, only on the
+thumb threshold:
+
+- `_scroll_finger_shape(f)` — index extended, middle extended, ring not
+  extended (pinky ignored). Unchanged, and shared by both checks.
+- `_can_enter_scroll(f)` — finger shape **and**
+  `thumb_tuck_ratio < THUMB_TUCK_MAX` (0.70, unchanged).
+- `_can_stay_in_scroll(f)` — finger shape **and**
+  `thumb_tuck_ratio < THUMB_TUCK_RELEASE` (0.95, new).
+
+`Tracking → Scroll` still calls `_can_enter_scroll()` after the 200 ms
+dwell; `Scroll → Tracking` now calls `_can_stay_in_scroll()` instead of
+re-using the entry predicate. `THUMB_TUCK_RELEASE = 0.95` was supplied
+directly rather than derived from a fresh measurement pass — 0.95 sits well
+above every scroll-posture thumb-tuck reading observed while still leaving
+room below the untucked values seen during a genuine middle-pinch approach.
+A test (`test_thumb_tuck_thresholds_have_hysteresis_gap`) asserts
+`THUMB_TUCK_MAX < THUMB_TUCK_RELEASE` so the two constants cannot be set
+inconsistently.
+
+**Verified working, for the mechanism it targets.** Tracing
+`recordings/scroll_attempt.jsonl` frame-by-frame confirms the fix does what
+it was built to do: at t=14.604-14.779s, `thumb_tuck_ratio` rises from 0.706
+to 0.839 while the scroll-posture fingers hold steady. Under the single
+shared threshold this dropped `Scroll` to `Tracking` on every one of those
+frames; under the asymmetric fix, all of them correctly stay inside
+`Scroll` (emitting `Scroll` intents) because none clears
+`THUMB_TUCK_RELEASE`. Total scroll output on the fixture went up slightly as
+a result (96 → 102 events, 9232 → 9341 px), not down — consistent with "not
+losing scroll magnitude." `middle_pinch.jsonl` still produces zero `Scroll`
+events; `reaching_past.jsonl` and `talking_hands.jsonl` still replay to zero
+intents; every other fixture (`five_clicks`, `one_double_click`,
+`live_clicks`, `drag_a_to_b`, `clutch`, `one_sweep`) is byte-for-byte
+unaffected, since none of them ever reach `Scroll`.
+
+**Not verified working, for the reported symptom.** The 4
+`ButtonDown`/`ButtonUp` pairs that motivated this fix are still present
+after it, unchanged in count and in timestamp (10.446s, 10.678s, 11.013s,
+11.279s). Tracing them shows why: they occur in a region (~9.5-12.0s) where
+`thumb_tuck_ratio` never drops below `THUMB_TUCK_MAX` (0.70) in the first
+place — it ranges roughly 0.72-1.08 throughout, well above the entry bar. So
+the state machine never enters `Scroll` in that region at all; it stays in
+`Tracking`/`Frozen`/`Pressed` for what is actually a legitimate index-curl
+clutch-and-pinch sequence, which is emitting real `ButtonDown`/`ButtonUp`
+pairs by the ordinary curl/pinch rules, not a scroll-exit bug. Diffing this
+fixture against the state machine as it existed before the original
+thumb-tuck gate (commit `1aa1b6d`) shows the same underlying pinch closures
+used to be silently absorbed there too — but by a different mechanism: the
+pre-thumb-tuck `Scroll` entry check was pure finger-shape, so the raw
+(True, True, False, False) finger flicker in that region was, by chance,
+often enough to re-enter `Scroll` right as each pinch closed, absorbing it.
+Adding a thumb condition to *entry* (not touched by this follow-up, and not
+in scope for it — the brief specifically asked only for the exit-side
+asymmetry) is what stopped that region from re-entering `Scroll`, exposing
+the pinch closures to the ordinary click path. The exit-side fix in this
+amendment has no mechanism to affect that, because the machine is never in
+`Scroll` there to begin with. `THUMB_TUCK_RELEASE` was not raised further
+in pursuit of removing these 4 pairs — see the follow-up task report for
+the full frame-by-frame trace this conclusion is based on.
 
 ## Amendment (2026-08-11): direct manipulation replaces trackpad mimicry
 
@@ -341,7 +418,10 @@ tip to pinky knuckle. Small means the thumb is tucked across the palm.
 Drives the scroll gate's thumb condition (see "Amendment (2026-08-19):
 scroll requires a tucked thumb" below): required in addition to the finger
 posture so that a middle-pinch double-click, which extends the thumb out to
-meet the middle fingertip, cannot also read as scroll.
+meet the middle fingertip, cannot also read as scroll. Checked against two
+different thresholds depending on direction (see "Amendment (2026-08-19):
+scroll thumb gate made asymmetric" below) — `THUMB_TUCK_MAX` to enter
+`Scroll`, the looser `THUMB_TUCK_RELEASE` to leave it.
 
 **`fingers_up[f]`** = ‖tip − wrist‖ > 1.15 × ‖pip − wrist‖ for each of index,
 middle, ring, pinky. Comparing distances from the wrist rather than comparing y
@@ -420,13 +500,13 @@ drag. All states fall back to `Disarmed` when the gate drops; the gate itself
 | `Disarmed` | `Tracking` | posture gate arms |
 | `Tracking` | `Frozen` | index curls: `index_curl_ratio` < `INDEX_CURL_CLOSE`, no pinch was open |
 | `Frozen` | `Tracking` | index uncurls: `index_curl_ratio` > `INDEX_CURL_OPEN` |
-| `Tracking` | `Scroll` | index extended, middle extended, ring not extended, thumb tucked (`thumb_tuck_ratio` < `THUMB_TUCK_MAX`), 200 ms (pinky ignored) |
+| `Tracking` | `Scroll` | index extended, middle extended, ring not extended, thumb tucked (`thumb_tuck_ratio` < `THUMB_TUCK_MAX`), 200 ms (pinky ignored) — `_can_enter_scroll()` |
 | `Tracking` | `Tracking` | horizontal sweep → emit `Space` |
 | `Tracking` or `Frozen` | `Pressed` | index not curled, pinch closes (`pinch_ratio` < 0.35 OR `pinch2_ratio` < 0.30, either finger) **and** the index channel is the closer one at that instant; emit `ButtonDown` |
 | `Tracking` or `Frozen` | (unchanged) | index not curled, pinch closes and the **middle** channel is the closer one; emit `Click(2)`, no state change |
 | `Pressed` | `Tracking` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); emit `ButtonUp` |
 | `Pressed` | `Frozen` | index curls while a pinch is open: `index_curl_ratio` < `INDEX_CURL_CLOSE`; emit `ButtonUp` first (see "The clutch: freezing the cursor" below) |
-| `Scroll` | `Tracking` | scroll posture lost (finger shape changes, or thumb un-tucks: `thumb_tuck_ratio` >= `THUMB_TUCK_MAX`) |
+| `Scroll` | `Tracking` | scroll posture lost: finger shape changes, or thumb clears `THUMB_TUCK_RELEASE` (`thumb_tuck_ratio` >= 0.95, looser than the 0.70 entry bar — see "Amendment (2026-08-19): scroll thumb gate made asymmetric") — `_can_stay_in_scroll()` returns false |
 | any | `Disarmed` | posture gate disarms; releases the button first if held (see Safety) |
 
 **Curl and pinch are mutually exclusive.** Curl is evaluated before pinch on
@@ -687,6 +767,12 @@ Entering `Scroll` additionally requires the thumb tucked toward the palm
 derivation), so that opening the middle finger for a middle-pinch
 double-click, which passes through the scroll finger posture and extends
 the thumb out to meet the middle fingertip, cannot also read as scroll.
+Leaving `Scroll` uses a separate, looser threshold, `THUMB_TUCK_RELEASE`
+(`thumb_tuck_ratio >= THUMB_TUCK_RELEASE`, added 2026-08-19 — see
+"Amendment (2026-08-19): scroll thumb gate made asymmetric" above), so a
+momentary thumb un-tuck mid-scroll is absorbed rather than dropping the
+user into `Tracking`, where a stray pinch reading could fire a click they
+did not intend.
 
 **`SCROLL_GAIN` raised 900 → 5000 → 20000 (2026-08-11): scroll magnitude undertuned.**
 The user reported "scroll does nothing." `recordings/scroll_attempt.jsonl` (a
@@ -945,7 +1031,8 @@ scroll, swipe, filter) are unchanged by this redesign.
 | `SCROLL_ACCEL_MIN` / `SCROLL_ACCEL_MAX` | 0.2 / 2.5 | scroll acceleration floor and ceiling (added 2026-08-19) — see "Amendment (2026-08-19)" above. Same role as `ACCEL_MIN` / `ACCEL_MAX` but for scroll: the floor keeps a near-still hand from drifting the page, the ceiling caps how much a fast flick is amplified |
 | `SCROLL_ACCEL_VREF` | 0.05 | controls how sharply scroll speed ramps up as your hand moves faster — this is the constant most users will want to adjust to change scroll's responsiveness. Lower it so a smaller increase in hand speed reaches full acceleration sooner (more twitchy); raise it so it takes a more deliberate flick before scroll speeds up (duller). Scroll hand speed is roughly an order of magnitude slower than cursor hand speed, so `ACCEL_VREF` (tuned for the cursor) is the wrong scale for it |
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no single scroll event is emitted |
-| `THUMB_TUCK_MAX` | 0.70 | scroll additionally requires `thumb_tuck_ratio` below this (added 2026-08-19) — see "Amendment (2026-08-19): scroll requires a tucked thumb" above. Keeps a middle-pinch double-click, which extends the thumb to meet the middle fingertip, from being misread as scroll. Measured medians: scroll 0.55, middle-pinch 0.86, index clicks 0.90; 0.70 keeps 195 of 260 genuine scroll frames while rejecting every colliding frame |
+| `THUMB_TUCK_MAX` | 0.70 | scroll entry additionally requires `thumb_tuck_ratio` below this (added 2026-08-19) — see "Amendment (2026-08-19): scroll requires a tucked thumb" above. Keeps a middle-pinch double-click, which extends the thumb to meet the middle fingertip, from being misread as scroll. Measured medians: scroll 0.55, middle-pinch 0.86, index clicks 0.90; 0.70 keeps 195 of 260 genuine scroll frames while rejecting every colliding frame |
+| `THUMB_TUCK_RELEASE` | 0.95 | scroll exit uses this instead of `THUMB_TUCK_MAX` (added 2026-08-19 follow-up) — see "Amendment (2026-08-19): scroll thumb gate made asymmetric" above. Must stay above `THUMB_TUCK_MAX` (asserted by `test_thumb_tuck_thresholds_have_hysteresis_gap`). Absorbs a momentary thumb un-tuck mid-scroll that would otherwise drop into `Tracking` and let a stray pinch reading fire an unintended click; a genuine untuck past 0.95 still exits. Does not, on its own, remove every spurious click observed on `recordings/scroll_attempt.jsonl` — some come from a different mechanism (`Scroll` failing to *enter* during a curl/pinch sequence where the thumb never drops below `THUMB_TUCK_MAX`), which this constant cannot address |
 | `MOVE_DEADZONE_PX` | 2.0 | jitter deadzone for `Move` (added 2026-08-11) — see "The jitter deadzone" above. Sub-threshold pixel deltas accumulate in a residual instead of being emitted or dropped, so tremor cancels but slow deliberate movement still arrives |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |
 | `SWIPE_COOLDOWN_MS` | 800 | prevents multi-Space skips |

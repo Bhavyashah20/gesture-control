@@ -114,7 +114,25 @@ SCROLL_ACCEL_VREF = 0.05
 # frame in middle_pinch and live_clicks. That 75% retention is measured
 # on a recording where the thumb was not deliberately tucked, so real
 # retention should be higher.
+#
+# This threshold governs ENTRY only. See THUMB_TUCK_RELEASE below for why
+# leaving scroll uses a separate, looser threshold.
 THUMB_TUCK_MAX = 0.70
+
+# Asymmetric on purpose, exactly like ARM_DWELL_S/DISARM_S above: entering
+# scroll must be strict (THUMB_TUCK_MAX) so it can't be confused with the
+# thumb opening out for a middle-pinch double-click, but leaving scroll
+# must be reluctant. Diagnosed 2026-08-19: with a single shared threshold,
+# 65 of 260 frames in recordings/scroll_attempt.jsonl have the thumb
+# drift above THUMB_TUCK_MAX mid-gesture without the user intending to
+# double-click. Each such frame dropped SCROLL straight to TRACKING,
+# which -- unlike SCROLL -- processes pinches, so a pinch reading during
+# that momentary window could fire a click the user never meant to make:
+# 4 spurious ButtonDown/ButtonUp pairs in that one recording. Requiring
+# the thumb to clear a much higher bar to leave scroll absorbs that
+# momentary drift while still letting a genuine, deliberate untuck (on
+# the way to a real middle-pinch) eject the user, same as before.
+THUMB_TUCK_RELEASE = 0.95
 
 SWIPE_VEL = 0.8
 SWIPE_DIST = 0.20

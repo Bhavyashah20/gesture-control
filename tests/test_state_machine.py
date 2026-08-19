@@ -462,14 +462,32 @@ def test_scroll_posture_with_tucked_thumb_enters_scroll():
     assert sm.state is State.SCROLL
 
 
-def test_scroll_exits_when_thumb_untucks_while_fingers_stay_in_position():
-    """The natural way a user leaves the scroll gesture to double-click:
-    fingers stay in the scroll posture, but the thumb comes off the palm to
-    meet the middle fingertip. Scroll must exit on that alone."""
+def test_scroll_stays_when_thumb_briefly_untucks_between_max_and_release():
+    """Regression test for the four spurious clicks (2026-08-19 follow-up):
+    a momentary thumb un-tuck mid-scroll must NOT eject the user from
+    SCROLL into TRACKING, because TRACKING processes pinches and a stray
+    pinch reading during that window fired an unintended click. Entry is
+    strict (THUMB_TUCK_MAX) but staying in scroll is loose -- the thumb
+    must exceed THUMB_TUCK_RELEASE, not just THUMB_TUCK_MAX, to leave."""
     sm = StateMachine()
     t = arm(sm)
     tucked = config.THUMB_TUCK_MAX - 0.10
-    untucked = config.THUMB_TUCK_MAX + 0.10
+    between = (config.THUMB_TUCK_MAX + config.THUMB_TUCK_RELEASE) / 2
+    sm.update(feat(t, fingers=TWO, tuck=tucked))
+    sm.update(feat(t + 0.25, fingers=TWO, tuck=tucked))
+    assert sm.state is State.SCROLL
+    sm.update(feat(t + 0.30, fingers=TWO, tuck=between))
+    assert sm.state is State.SCROLL
+
+
+def test_scroll_exits_when_thumb_untucks_past_release():
+    """Unlike a momentary un-tuck (see the test above), a thumb that
+    genuinely comes off the palm -- past THUMB_TUCK_RELEASE, on the way to
+    a real middle-pinch double-click -- must still eject scroll."""
+    sm = StateMachine()
+    t = arm(sm)
+    tucked = config.THUMB_TUCK_MAX - 0.10
+    untucked = config.THUMB_TUCK_RELEASE + 0.05
     sm.update(feat(t, fingers=TWO, tuck=tucked))
     sm.update(feat(t + 0.25, fingers=TWO, tuck=tucked))
     assert sm.state is State.SCROLL

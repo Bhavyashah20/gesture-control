@@ -10,27 +10,36 @@ from .gate import Gate
 from .types import ButtonDown, ButtonUp, Click, Features, Intent, Move, Point2, Scroll, Space
 
 
-def _is_scroll_posture(f: Features) -> bool:
-    """Check if the hand posture is scroll-ready: index and middle fingers
-    extended, ring finger not extended, thumb tucked toward the palm. The
-    pinky is ignored (it is unreliable and contributes nothing to
-    distinguishing this posture from others).
+def _scroll_finger_shape(f: Features) -> bool:
+    """Finger shape shared by scroll entry and exit: index and middle
+    extended, ring not extended. The pinky is ignored (it is unreliable
+    and contributes nothing to distinguishing this posture from others).
+    Symmetric between entry and exit -- only the thumb-tuck threshold
+    differs (see _can_enter_scroll / _can_stay_in_scroll below), the same
+    way gate.py's arm/sustain checks share their finger-count condition
+    but diverge on dwell."""
+    return f.fingers_up[0] and f.fingers_up[1] and not f.fingers_up[2]
 
-    The thumb-tuck requirement (see config.py's THUMB_TUCK_MAX comment)
-    exists because opening the middle finger to perform a middle-pinch
-    double-click passes through the finger posture above -- the middle-pinch
-    also extends the thumb out to meet the middle fingertip, so requiring
-    the thumb tucked makes the two gestures mutually exclusive.
 
-    This predicate is used for both entry and exit conditions to ensure
-    consistency: enter scroll if this returns True after dwell, exit if it
-    returns False."""
-    return (
-        f.fingers_up[0]
-        and f.fingers_up[1]
-        and not f.fingers_up[2]
-        and f.thumb_tuck_ratio < config.THUMB_TUCK_MAX
-    )
+def _can_enter_scroll(f: Features) -> bool:
+    """Strict: the thumb must be tucked below THUMB_TUCK_MAX to enter
+    scroll, so a deliberate scroll gesture can never be confused with the
+    thumb opening out for a middle-pinch double-click (see config.py's
+    THUMB_TUCK_MAX comment)."""
+    return _scroll_finger_shape(f) and f.thumb_tuck_ratio < config.THUMB_TUCK_MAX
+
+
+def _can_stay_in_scroll(f: Features) -> bool:
+    """Loose: once in scroll, the thumb must exceed THUMB_TUCK_RELEASE --
+    a much higher bar than THUMB_TUCK_MAX -- before scroll is left. A
+    momentary thumb un-tuck mid-scroll must not eject the user into
+    TRACKING, because TRACKING processes pinches: dropping out of SCROLL
+    on a brief thumb drift let a stray pinch reading fire a click the
+    user never intended (see config.py's THUMB_TUCK_RELEASE comment).
+    This mirrors the arm/sustain asymmetry in gate.py, for the same
+    reason -- sustaining/staying is deliberately harder to fall out of
+    than entering/arming is to trigger."""
+    return _scroll_finger_shape(f) and f.thumb_tuck_ratio < config.THUMB_TUCK_RELEASE
 
 
 class State(Enum):
@@ -232,7 +241,7 @@ class StateMachine:
             self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
 
         if self._state is State.SCROLL:
-            if not _is_scroll_posture(f):
+            if not _can_stay_in_scroll(f):
                 self._state = State.TRACKING
                 return intents
             speed = abs(dyn) / dt if dt > 0.0 else 0.0
@@ -283,7 +292,7 @@ class StateMachine:
         dxp, dyp = apply_gain(dxn, dyn, dt)
         intents += self._accumulate_move(dxp, dyp)
 
-        if _is_scroll_posture(f):
+        if _can_enter_scroll(f):
             if self._scroll_since is None:
                 self._scroll_since = f.t
             elif f.t - self._scroll_since >= config.SCROLL_DWELL_S:

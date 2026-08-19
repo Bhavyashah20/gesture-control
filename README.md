@@ -88,6 +88,36 @@ and rejects every colliding frame from `middle_pinch.jsonl` and
 thumb was not deliberately tucked; now that the tuck is part of the
 gesture, real retention should be higher.
 
+**Scroll thumb gate is asymmetric (2026-08-19 follow-up).** The gate above,
+using one shared threshold for both entering and leaving scroll, had a side
+effect: replaying `recordings/scroll_attempt.jsonl` showed 65 of 260
+scroll-posture frames with the thumb drifting back above `THUMB_TUCK_MAX`
+mid-gesture without the user meaning to double-click. Each such frame
+dropped `SCROLL` straight to `TRACKING`, which — unlike `SCROLL` — processes
+pinches, so a stray pinch reading during that momentary window could fire a
+click the user never intended. The fix mirrors the gate's own arm/sustain
+asymmetry (see "Gestures" above): entering scroll stays strict
+(`thumb_tuck_ratio < THUMB_TUCK_MAX`), but staying in scroll is loose — the
+thumb must clear a separate, higher `THUMB_TUCK_RELEASE = 0.95` before
+scroll is left. A brief un-tuck is absorbed; a genuine, deliberate untuck on
+the way to a real middle-pinch still ejects the user, since it clears 0.95.
+Measured against `recordings/scroll_attempt.jsonl`: the specific transition
+this was built to fix (the thumb drifting from ~0.71 to ~0.84 while
+scroll-posture fingers hold steady) now correctly stays inside `SCROLL`
+instead of dropping out, and total scroll output on that fixture went up
+slightly (96 → 102 events, 9232 → 9341 px) rather than down. However, the 4
+`ButtonDown`/`ButtonUp` pairs originally reported are **still present**
+after this fix, unchanged in count and timestamp. Tracing them showed they
+occur in a different part of the recording (~10.4-11.9 s) where the thumb
+never drops below `THUMB_TUCK_MAX` in the first place — the machine never
+enters `SCROLL` there at all, so the exit-side asymmetry has nothing to
+absorb. Before the original thumb-tuck gate existed, that same segment
+stayed in `SCROLL` because the *entry* check was pure finger-shape with no
+thumb condition; adding the thumb condition to entry (not touched by this
+follow-up) is what stopped `SCROLL` from picking that segment up. This is a
+different mechanism than the one diagnosed, and out of scope for this fix —
+see the follow-up report for the full trace.
+
 This replaces an earlier design where a pinch meant both "move the cursor"
 and, if held still, "start a drag" — which meant any pause while aiming a
 pinch could be misread as the start of a drag. No dwell threshold separated
@@ -213,16 +243,32 @@ genuinely pinching (see `PINCH_CLOSE`/`PINCH2_CLOSE` above), and a pinch
 misread as a curl would freeze the cursor mid-drag, so `INDEX_CURL_OPEN =
 1.20` stays below the pointing cluster while never touching the pinch floor.
 
-`THUMB_TUCK_MAX` (2026-08-19) governs the scroll thumb gate: scroll requires
-`thumb_tuck_ratio` (thumb tip to pinky knuckle, scale-normalized) below this
-value, in addition to the finger posture, so that opening the middle finger
-to pinch it to the thumb — which passes through the scroll finger posture on
-the way there — cannot be misread as scroll. Measured medians: scroll 0.55,
-middle-pinch 0.86, index clicks 0.90. `0.70` keeps 195 of 260 genuine scroll
-frames in `recordings/scroll_attempt.jsonl` while rejecting every colliding
-frame in `middle_pinch.jsonl` and `live_clicks.jsonl`. Lowering it trades
-scroll retention for a wider safety margin against the collision; raising it
-does the opposite.
+`THUMB_TUCK_MAX` (2026-08-19) governs *entering* the scroll thumb gate:
+scroll requires `thumb_tuck_ratio` (thumb tip to pinky knuckle,
+scale-normalized) below this value, in addition to the finger posture, so
+that opening the middle finger to pinch it to the thumb — which passes
+through the scroll finger posture on the way there — cannot be misread as
+scroll. Measured medians: scroll 0.55, middle-pinch 0.86, index clicks 0.90.
+`0.70` keeps 195 of 260 genuine scroll frames in
+`recordings/scroll_attempt.jsonl` while rejecting every colliding frame in
+`middle_pinch.jsonl` and `live_clicks.jsonl`. Lowering it trades scroll
+retention for a wider safety margin against the collision; raising it does
+the opposite.
+
+`THUMB_TUCK_RELEASE` (2026-08-19 follow-up) governs *leaving* scroll, and is
+deliberately looser than `THUMB_TUCK_MAX` — the same asymmetry as
+`ARM_DWELL_S`/`DISARM_S`: strict to enter, reluctant to leave. With a single
+shared threshold, a momentary thumb drift above `THUMB_TUCK_MAX` mid-scroll
+dropped straight to `TRACKING`, which processes pinches — letting a stray
+pinch reading fire an unintended click during that window. The thumb must
+now clear `THUMB_TUCK_RELEASE = 0.95`, not just `THUMB_TUCK_MAX`, before
+scroll is left, so a brief un-tuck is absorbed while a genuine, deliberate
+untuck (on the way to a real middle-pinch) still ejects the user. Raising it
+further trades a wider absorption margin for a slower reaction to a genuine
+exit; it must stay above `THUMB_TUCK_MAX` (enforced by
+`test_thumb_tuck_thresholds_have_hysteresis_gap`). See the "Scroll thumb
+gate is asymmetric" paragraph above for what this fix did and did not fix
+against `recordings/scroll_attempt.jsonl`.
 
 `MOVE_DEADZONE_PX` (2026-08-11) governs the jitter deadzone: sub-threshold
 per-frame `Move` deltas accumulate in a residual instead of being emitted or
