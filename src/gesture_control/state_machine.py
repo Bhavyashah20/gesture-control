@@ -236,12 +236,38 @@ class StateMachine:
             self._reset_transient()
             return intents
 
-        ref = self._filter.filter(f.cursor_ref, f.t)
-
         if self._state is State.DISARMED:
+            # Arming requires f.present (see gate._can_arm), so this frame's
+            # cursor_ref is always real here, never the sentinel.
+            ref = self._filter.filter(f.cursor_ref, f.t)
             self._state = State.TRACKING
             self._ref, self._t = ref, f.t
             return intents
+
+        if not f.present:
+            # The hand is momentarily lost while still armed -- exactly what
+            # the gate's DISARM_S sustain window is for (gate.py), and what
+            # main.py deliberately feeds on a camera read failure.
+            # features.extract returns the _ABSENT sentinel for this frame,
+            # whose cursor_ref is frame-centre (0.5, 0.5), not a real hand
+            # position (see features.py). It must never reach the movement
+            # path: skip the One Euro filter, the ref/dt bookkeeping below,
+            # and the curl/pinch channels entirely this frame, and leave the
+            # current state (PRESSED, SCROLL, ...) exactly as it was -- a
+            # held button stays down, a scroll's neutral stays put, and no
+            # Move or Scroll is emitted for the gap.
+            #
+            # Clearing _ref/_t (rather than leaving them pointing at the
+            # last real position) reuses the same re-seed mechanism the
+            # DISARMED->TRACKING transition above relies on: dt/dxn/dyn
+            # below default to 0.0 whenever _ref/_t is None, so the next
+            # real frame re-anchors from wherever the hand actually is, with
+            # no delta replayed for the gap, instead of jumping from the
+            # stale pre-dropout position.
+            self._ref, self._t = None, None
+            return intents
+
+        ref = self._filter.filter(f.cursor_ref, f.t)
 
         dt = f.t - self._t if self._t is not None else 0.0
         dxn = ref.x - self._ref.x if self._ref is not None else 0.0

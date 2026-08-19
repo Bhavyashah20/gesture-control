@@ -4,7 +4,100 @@ Date: 2026-08-10
 Status: Approved and implemented; amended 2026-08-11 (direct-manipulation
 redesign; stability fixes); amended 2026-08-19 (scroll acceleration; scroll
 thumb gate; scroll thumb gate made asymmetric; pinch requires an extended
-finger); amended 2026-08-20 (rate-based scrolling replaces displacement)
+finger); amended 2026-08-20 (rate-based scrolling replaces displacement;
+absent frames must not reach the movement path)
+
+## Amendment (2026-08-20): absent frames must not reach the movement path
+
+**An absent frame is not a hand at the centre of the frame.** Reported by
+the user: "if it is disabled somehow the cursor stays in the same
+position" — it did not; it jumped to the middle of the screen and back on
+every brief detection dropout while armed.
+
+`features.extract` returns the `_ABSENT` sentinel for any `present=False`
+`HandFrame`, and that sentinel's `cursor_ref` is `Point2(0.5, 0.5)` —
+frame-centre — by construction (see `features.py`). This is not a rare
+edge case: the gate's `DISARM_S` sustain window (500 ms — see "Posture
+gate" below) exists specifically so a *momentary* tracking loss doesn't
+disarm the system, and `main.py` deliberately feeds an absent frame on
+every failed camera read so the gate's timers keep advancing and the
+stuck-button watchdog can still fire. So the state machine sees
+`present=False` frames routinely while still armed, not just at the
+instant of disarming.
+
+Before this fix, `state_machine.update` had no guard on `f.present` in the
+armed path: it filtered the sentinel's `cursor_ref` like any real position,
+computed a delta from the last real hand position to frame-centre, emitted
+a `Move` for it, and stored the sentinel as the new reference. The next
+real frame then computed another large delta back from centre to the
+hand's actual (undropped) position. Net effect: every dropout threw the
+cursor at the screen centre and back, twice the size of the actual gap.
+
+**The fix.** `StateMachine.update` now checks `f.present` immediately
+after the `Disarmed → Tracking` re-seed (which cannot itself see the
+sentinel — arming requires `f.present`, so that frame is always real) and
+before any of the filter, delta, curl, or pinch logic runs:
+
+```python
+if not f.present:
+    self._ref, self._t = None, None
+    return intents
+```
+
+Nothing else touches state for this frame. Concretely, per active state:
+
+- **`Tracking` / `Frozen`.** No `Move` is computed or emitted; the One
+  Euro filter is never fed the sentinel (feeding it would have polluted
+  its internal velocity estimate even without emitting a `Move`, biasing
+  the *next* real frame's smoothing). Clearing `_ref`/`_t` to `None`
+  reuses the exact re-seed mechanism the `Disarmed → Tracking` transition
+  already relies on: every delta computation below is already guarded by
+  `if self._ref is not None else 0.0`, so the next real frame naturally
+  computes a zero delta and re-anchors from wherever the hand actually is
+  — no jump replayed for the gap, and no separate re-seed path to
+  maintain.
+- **`Pressed`.** The button stays down through the dropout: `_pinch_closed`
+  and `_curled` are untouched (the curl/pinch channels are not evaluated
+  at all on an absent frame — evaluating them against sentinel values,
+  even though the sentinel is shaped to read as "unpinched, uncurled" so
+  it is not self-evidently dangerous, still risks a spurious transition
+  for no benefit, so the frame is skipped outright rather than evaluated
+  and discarded). Only the existing stuck-button watchdog — `Gate`'s own
+  `DISARM_S` timer, orthogonal to this change — releases the button, and
+  only if the hand never returns before it fires. On reappearance the
+  drag resumes from the hand's real position with no jump, via the same
+  `_ref = None` re-seed above.
+- **`Scroll`.** Nothing is computed; no `Scroll` is emitted for the gap
+  (running the rate-scroll formula against the sentinel's `cursor_ref`
+  would produce a bogus offset from `_scroll_neutral` and scroll at a
+  meaningless rate). `_scroll_neutral` is left exactly as recorded on
+  entry — it is not re-derived from, or reset by, the sentinel — so
+  scrolling resumes on reappearance relative to the same neutral as
+  before the dropout, not a stale or corrupted one.
+
+**Side effect worth recording.** The same contamination existed one level
+up: `_detect_swipe` used to run on absent frames too, appending the
+sentinel's raw (unfiltered) `cursor_ref` into the swipe history. A real
+frame arriving immediately after an absent one then computed its
+swipe displacement/velocity against that frame-centre point instead of
+the hand's actual prior position, occasionally crossing `SWIPE_DIST` /
+`SWIPE_VEL` and firing a `Space` the user never gestured. Skipping absent
+frames entirely (they never reach `_detect_swipe` now, since it is only
+called from the `Tracking` fall-through) removes this too.
+`recordings/live_clicks.jsonl` demonstrates it directly: replayed before
+this fix it produced two incidental `Space("right")` events, both
+immediately following an absent frame (`t≈7.548` and `t≈8.58`-`8.647`);
+replayed after, it produces exactly one `Space("left")`, corresponding to
+the recording's one genuine sustained leftward sweep
+(`cursor_ref.x` 0.927 → 0.457 between frames 232 and 249). See
+`tests/test_replay.py::test_live_clicks_contains_one_incidental_space`.
+
+Verified against every fixture in `recordings/`:
+`reaching_past.jsonl` (9 of 300 frames present — heavily absent-dominated,
+a good stress case for this exact change) and `talking_hands.jsonl` still
+replay to zero intents of any kind, unchanged by this fix. See
+`.superpowers/sdd/2026-08-10-gesture-control/absent-frame-report.md` for
+the full before/after intent-count table across all fixtures.
 
 ## Amendment (2026-08-20): rate-based scrolling replaces displacement
 
@@ -689,12 +782,19 @@ Beyond transitions, three states are active on every frame:
 |---|---|
 | `Tracking` | computes a `Move(dx, dy)` candidate from the filtered `cursor_ref` delta, then runs it through the jitter deadzone below — most frames accumulate silently, and a `Move` is emitted only when the deadzone crosses |
 | `Pressed` | same candidate-then-deadzone pipeline, actuated as `LeftMouseDragged` when it does emit |
-| `Scroll` | rate-based (2026-08-20): emits `Scroll(dy)` every frame the hand's offset from the entry-recorded `neutral` clears `SCROLL_NEUTRAL_DEADZONE` and the resulting per-frame amount clears `SCROLL_MIN_PX` — no hand movement between frames is required, unlike `Move` above; see "Amendment (2026-08-20)" above |
+| `Scroll` | rate-based (2026-08-20): emits `Scroll(dy)` every frame the hand's offset from the entry-recorded `neutral` clears `SCROLL_NEUTRAL_DEADZONE` and the resulting per-frame amount clears `SCROLL_MIN_PX` — no hand movement between frames is required, unlike `Move` above; see "Amendment (2026-08-20): rate-based scrolling replaces displacement" above |
 
 `Frozen` and `Disarmed` emit nothing. This is the whole mechanism: the cursor
 does not move in `Frozen` — that is what makes the clutch a clutch — and
 `Tracking` and `Pressed` are the only states where hand movement can produce
 a `Move`.
+
+"Every frame" above means every *present* frame. An absent frame
+(`f.present` False — the hand momentarily lost while still armed) emits
+nothing from any state, `Scroll` and `Pressed` included: it is not treated
+as "the hand at frame-centre" and does not feed the movement, scroll, or
+swipe pipelines at all. See "Amendment (2026-08-20): absent frames must
+not reach the movement path" above.
 
 #### The jitter deadzone (2026-08-11)
 
@@ -1112,7 +1212,14 @@ runtime.
   and the jitter deadzone accumulator (consistent sub-threshold motion
   accumulates and eventually emits its full total; alternating sub-threshold
   motion cancels and emits nothing; the residual applies identically during
-  a drag; it resets on disarm and on entering `Frozen`)
+  a drag; it resets on disarm and on entering `Frozen`); the absent-frame
+  dropout while armed (added 2026-08-20: an absent frame emits no `Move`;
+  hand present, absent for several frames, then present at a distant
+  position emits zero net movement across the whole gap; a held `Pressed`
+  survives the dropout and the disarm watchdog still releases it if the
+  gate eventually drops; `Scroll` emits nothing during a dropout and its
+  `neutral` is not corrupted by it — see "Amendment (2026-08-20): absent
+  frames must not reach the movement path")
 - `filters`: One Euro converges on constant input; gain curve is monotonic and
   respects its clamps
 

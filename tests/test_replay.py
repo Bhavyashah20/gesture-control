@@ -103,14 +103,28 @@ def test_live_clicks_yields_twelve_button_down_up_pairs_never_a_click_two():
     assert Click(2) not in out
 
 
-def test_live_clicks_also_contains_two_incidental_spaces():
-    """Not a redesign artifact: replaying this recording under the OLD
-    state machine also produced exactly two Space intents (the user swept
-    their open hand between taps fast enough to cross the swipe
-    thresholds). Pinned here so a future swipe-tuning change surfaces its
-    effect on this fixture too, not just on one_sweep.jsonl."""
+def test_live_clicks_contains_one_incidental_space():
+    """Pinned here so a future swipe-tuning change surfaces its effect on
+    this fixture too, not just on one_sweep.jsonl.
+
+    Was 2 before the 2026-08-20 absent-frame fix (see state_machine.py's
+    `if not f.present` branch). Both were sentinel artifacts, not genuine
+    swipes: this recording has a real absent frame at index 225 (t=7.548)
+    right before one 'right' Space and a run of three absent frames at
+    indices 256-258 right before the other. Under the OLD code,
+    `_detect_swipe` still ran on absent frames and appended the sentinel's
+    frame-centre cursor_ref (0.5, 0.5) into the swipe history; the very
+    next real frame then computed its displacement against that stale
+    centre point instead of the hand's actual prior position, reading as a
+    fast rightward swipe it never made. Skipping absent frames entirely
+    (this fix) removes both artifacts and leaves the one genuine swipe: a
+    real, sustained leftward sweep from cursor_ref.x=0.927 (frame 232) to
+    0.457 (frame 249), comfortably clearing SWIPE_DIST and SWIPE_VEL on
+    its own."""
     out = _replay("live_clicks")
-    assert len([i for i in out if isinstance(i, Space)]) == 2
+    spaces = [i for i in out if isinstance(i, Space)]
+    assert len(spaces) == 1
+    assert spaces[0] == Space("left")
 
 
 def test_drag_yields_one_button_down_and_one_button_up():

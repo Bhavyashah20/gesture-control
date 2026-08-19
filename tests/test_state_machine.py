@@ -237,6 +237,110 @@ def test_hand_vanishing_while_pressed_releases_the_button():
     assert sm.state is State.DISARMED
 
 
+# --- Absent-frame dropout while armed ---
+#
+# features.extract returns the _ABSENT sentinel for a present=False frame,
+# whose cursor_ref is (0.5, 0.5) -- frame-centre. The gate's DISARM_S sustain
+# window (and main.py's deliberate feeding of an absent frame on a camera
+# read failure) means the state machine sees present=False frames routinely
+# while still armed, not just at the moment of disarming. The reported bug:
+# treating that sentinel as a real hand position threw the cursor to
+# frame-centre and back on every brief detection dropout. These tests pin
+# down the fix: the cursor must hold still, and no other per-frame channel
+# (pinch, curl, scroll neutral) may be evaluated against sentinel values.
+
+
+def test_absent_frame_while_armed_emits_no_move():
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, ref=(0.2, 0.3)))
+    out = sm.update(feat(t + 0.05, present=False))
+    assert out == []
+    assert sm.state is State.TRACKING
+
+
+def test_dropout_between_distant_positions_emits_no_net_movement():
+    """The exact reported bug. Hand present at A, absent for several frames
+    (all comfortably inside the gate's DISARM_S sustain window, so it never
+    disarms), then present again at a distant B: total movement emitted
+    across the whole gap -- including the reappearance frame itself -- must
+    be zero. Movement resumes cleanly from B only on the frame after that.
+    """
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, ref=(0.2, 0.2)))
+
+    n_absent = 5
+    step = (config.DISARM_S / 2) / n_absent
+    t_now = t
+    gap_out: list = []
+    for _ in range(n_absent):
+        t_now += step
+        gap_out += sm.update(feat(t_now, present=False))
+
+    t_now += step
+    gap_out += sm.update(feat(t_now, ref=(0.8, 0.8)))
+
+    assert sm.state is State.TRACKING  # still armed throughout
+    assert [i for i in gap_out if isinstance(i, Move)] == []
+
+
+def test_press_held_across_dropout_resumes_without_jump_on_reappearance():
+    """PRESSED must survive a brief dropout unchanged: no ButtonUp, no
+    spurious Move, and the button stays down (the disarm watchdog, not this
+    path, is what eventually releases it -- see the watchdog tests). On
+    reappearance the drag resumes from the hand's real position without
+    replaying the gap as a jump."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2, ref=(0.2, 0.2)))
+    assert sm.state is State.PRESSED
+
+    n_absent = 3
+    step = (config.DISARM_S / 2) / n_absent
+    t_now = t
+    gap_out: list = []
+    for _ in range(n_absent):
+        t_now += step
+        # pinch=0.2 on the absent frames too: an absent frame must not be
+        # read as an open pinch (see test_hand_vanishing_while_pressed_
+        # releases_the_button's docstring) -- that would exercise the
+        # ordinary release path instead of this dropout-hold path.
+        gap_out += sm.update(feat(t_now, pinch=0.2, present=False))
+    assert gap_out == []
+    assert sm.state is State.PRESSED
+
+    t_now += step
+    out = sm.update(feat(t_now, pinch=0.2, ref=(0.9, 0.9)))
+    assert [i for i in out if isinstance(i, Move)] == []
+    assert sm.state is State.PRESSED
+
+
+def test_watchdog_still_releases_after_a_multi_frame_dropout():
+    """The disarm watchdog is driven purely by the gate's own DISARM_S
+    timer, orthogonal to the state machine's cursor-hold logic above -- it
+    must still fire correctly across several absent frames, not just one."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    assert sm.state is State.PRESSED
+
+    step = config.DISARM_S / 4
+    lost_since = t + step
+    # pinch=0.2 throughout: an absent frame must not be read as an open
+    # pinch, or the ordinary release path fires instead of the watchdog.
+    out = sm.update(feat(lost_since, pinch=0.2, present=False))
+    assert out == []
+    assert sm.state is State.PRESSED
+    out = sm.update(feat(lost_since + step, pinch=0.2, present=False))
+    assert out == []
+    assert sm.state is State.PRESSED
+
+    out = sm.update(feat(lost_since + config.DISARM_S + 0.10, pinch=0.2, present=False))
+    assert ButtonUp() in out
+    assert sm.state is State.DISARMED
+
+
 # --- The clutch: curling the index finger freezes the cursor ---
 #
 # Curl values below are derived from the calibrated config constants, not
@@ -756,6 +860,41 @@ def test_losing_two_finger_posture_leaves_scroll():
     sm.update(feat(t + 0.25, fingers=TWO))
     sm.update(feat(t + 0.40))
     assert sm.state is State.TRACKING
+
+
+def test_scroll_pauses_during_dropout_and_neutral_is_preserved():
+    """A dropout mid-SCROLL must emit no Scroll for the gap (rate-scroll
+    running at a bogus offset derived from the sentinel would be exactly
+    the reported bug's scroll analogue), and must not let the sentinel
+    corrupt the recorded neutral. Entry is held away from frame-centre
+    (0.8, not 0.5) specifically so a neutral accidentally reset toward the
+    sentinel's centre cursor_ref (0.5, 0.5) would be caught below: holding
+    back at the real neutral (0.8) would then read as a large offset and
+    scroll continuously instead of staying silent."""
+    sm = StateMachine()
+    t = arm(sm)
+    dt = 1.0 / 30.0
+    t_now = t
+    entry_y = 0.8
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, entry_y)))
+    assert sm.state is State.SCROLL
+
+    n_absent = 3
+    step = (config.DISARM_S / 2) / n_absent
+    for _ in range(n_absent):
+        t_now += step
+        out = sm.update(feat(t_now, present=False))
+        assert out == []
+    assert sm.state is State.SCROLL
+
+    scrolls: list = []
+    for _ in range(10):
+        t_now += dt
+        out = sm.update(feat(t_now, fingers=TWO, ref=(0.5, entry_y)))
+        scrolls += [i for i in out if isinstance(i, Scroll)]
+    assert scrolls == []
 
 
 def _sweep(sm, t, x_from, x_to, steps=8, span=0.20):
