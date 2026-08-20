@@ -6,7 +6,92 @@ redesign; stability fixes); amended 2026-08-19 (scroll acceleration; scroll
 thumb gate; scroll thumb gate made asymmetric; pinch requires an extended
 finger); amended 2026-08-20 (rate-based scrolling replaces displacement;
 absent frames must not reach the movement path; scroll exit debounce;
-Space switch requires an exact three-finger posture)
+Space switch requires an exact three-finger posture); amended 2026-08-21
+(posture gate sustain no longer requires palm_facing)
+
+## Amendment (2026-08-21): sustain no longer requires palm_facing
+
+**The three-finger swipe worked leftward but was lost rightward, and the
+cause was the posture gate, not the swipe detector.** The previous
+amendment ("Space switch requires an exact three-finger posture" below)
+diagnosed this and left it out of scope: every rightward swipe in
+`recordings/three_finger.jsonl` rotates the palm edge-on to the camera for
+roughly 0.3-0.4 s, tripping `Gate._can_sustain`'s `palm_facing`
+requirement and, via `DISARM_S`, dropping the state machine out of
+`Tracking` mid-swipe.
+
+**The cause is physical, not a detection artifact.** Handedness is stable
+across all 448 frames in the recording ("Right", zero label changes), and
+only 4% of frames sit in the genuinely ambiguous edge-on band — but the
+normalized palm normal reaches -0.46 at p05 while the median is +0.39.
+Swiping right genuinely rotates the palm past facing the camera; this
+isn't landmark noise being misread.
+
+**The fix drops `palm_facing` from the sustain condition:**
+
+```python
+def _can_sustain(self, f: Features) -> bool:
+    return f.present
+```
+
+`_can_arm` is unchanged — arming still requires `palm_facing`, at least
+`ARM_FINGERS_MIN` extended fingers, `hand_scale` in range, and the full
+`ARM_DWELL_S` dwell. This extends the gate's existing asymmetry (arming
+strict, sustaining loose — see "Posture gate" below) rather than replacing
+it: the conditions that prove intent at the start are conditions ordinary
+use then violates, and that was already true of the finger-extension
+requirement (pinching closes the index finger) before it was true of
+`palm_facing`. The general lesson: gestures rotate the hand, so any
+sustain condition on orientation fights every gesture, not only the one
+that happened to expose it first.
+
+**Measured effect on `recordings/three_finger.jsonl`:** before the fix,
+the gate disarmed 3 times over the recording, for stretches up to 41
+frames (1.4 s), with 62 of 267 three-finger frames caught disarmed; full
+pipeline replay produced only 2 `Space` intents, both `Space("left")`.
+After the fix: zero disarms, all 267 three-finger frames armed, and replay
+produces 5 `Space` intents — 3 `Space("right")` and 2 `Space("left")` —
+matching the 5 raw posture/velocity crossings the previous amendment
+measured independently of the gate. Both directions now work.
+
+**Verified against the non-negotiable fixtures.** `reaching_past.jsonl`
+and `talking_hands.jsonl` still replay to zero intents of any kind —
+arming is untouched, so neither fixture, which never satisfies the strict
+arm condition, ever arms in the first place. A stickier sustain condition
+only changes behaviour once armed, so this had to be checked, not assumed.
+
+**Effect on `recordings/scroll_hold.jsonl`.** Also stickier, and measurably
+better, though not the recording this fix targets: before, 88 `Scroll`
+events totalling ~3270 px; after, 111 events totalling ~4162 px (roughly
+27% more of both). The mechanism is the same one-level-out effect as
+above — when the gate disarmed mid-hold on a palm-orientation blip, the
+state machine fell all the way back to `Disarmed`, dropping `Scroll`'s
+rate neutral entirely (a strictly worse loss than the fragmentation
+`SCROLL_EXIT_S` already absorbs within an armed session). This was
+measured, not assumed, to confirm it moved in the right direction rather
+than being an untested side effect.
+
+**Tests.** `tests/test_gate.py` pins the change directly:
+`test_stays_armed_when_palm_turns_away` holds `palm_facing=False` for
+several seconds past `DISARM_S` with the hand present throughout and
+asserts the gate never disarms — verified to fail against the pre-fix
+`_can_sustain`. `test_requires_palm_facing_to_arm` pins that arming is
+unaffected. `test_disarms_when_hand_absent_even_with_palm_turned_away`
+pins that presence, not orientation, is what still disarms.
+`test_disarms_when_palm_turns_away` — the previous test, which asserted
+disarming on palm orientation alone — encoded the now-obsolete behaviour
+and was replaced by `test_stays_armed_when_palm_turns_away` rather than
+kept passing by coincidence.
+`tests/test_replay.py`'s `test_three_finger_recording_yields_multiple_spaces`
+is updated to the new, higher, both-directions figure.
+
+**Consequence: turning the palm away no longer stops the system.** This is
+worth stating plainly because it is a behaviour change to something safety
+lives near. The system now stops the same two ways it always could stop
+regardless of orientation: drop the hand out of frame (disarms after
+`DISARM_S` with the hand absent) or press `Esc` (the kill switch — see
+"Safety" below). See the README's "Gestures" section for the user-facing
+version of this note.
 
 ## Amendment (2026-08-20 second follow-up): Space switch requires an exact three-finger posture
 
@@ -95,15 +180,23 @@ This is a genuine measurement, not a defect introduced by this change —
 interaction predates this work and would show up under the old finger gate
 too, just masked by the fact that the old gate never fired on this
 recording at all (three-or-more-fingers plus the old `SWIPE_VEL = 0.8`
-rejected every crossing regardless). Fixing it is out of scope here: it was
-neither requested nor measured against unrelated recordings, and would mean
-retuning the arm/disarm gate or `palm_facing`, both shared by every other
-gesture. The regression test for this change,
-`test_three_finger_recording_yields_multiple_spaces` in
-`tests/test_replay.py`, pins the true, lower, single-direction figure (`>=
-2`, all `Space("left")`) rather than the higher bypass count, so it stays
-honest about what the shipped system actually does — see that test's
-docstring for the full measurement.
+rejected every crossing regardless). Fixing it was out of scope for this
+change at the time: it was neither requested nor measured against
+unrelated recordings, and would mean retuning the arm/disarm gate or
+`palm_facing`, both shared by every other gesture. The regression test for
+this change, `test_three_finger_recording_yields_multiple_spaces` in
+`tests/test_replay.py`, pinned the true, lower, single-direction figure
+(`>= 2`, all `Space("left")`) rather than the higher bypass count, so it
+stayed honest about what the shipped system actually did at the time —
+see that test's docstring for the full measurement.
+
+**Superseded 2026-08-21.** This "out of scope" gap was the very next fix —
+see "Amendment (2026-08-21): sustain no longer requires palm_facing" above.
+`Gate._can_sustain` no longer requires `palm_facing`, so this recording now
+replays to 5 `Space` intents, 3 right and 2 left, and the test above
+asserts that instead. The measurement and mechanism described in this
+section remain accurate as a historical record of the diagnosis; they are
+no longer the shipped behaviour.
 
 **Verified against every other fixture.** `reaching_past.jsonl` and
 `talking_hands.jsonl` still replay to zero intents of any kind
@@ -939,12 +1032,23 @@ conditions.
 | Transition | Condition | Dwell |
 |---|---|---|
 | Disarmed → Armed | ≥3 of 4 fingers extended, `palm_facing`, `hand_scale` ∈ [0.08, 0.45] | 300 ms |
-| Armed → Disarmed | hand absent, or not `palm_facing` | 500 ms |
+| Armed → Disarmed | hand absent | 500 ms |
 
 The asymmetry is required, not incidental: pinching closes the index finger, so a
 sustain condition that demanded extended fingers would disarm the system the moment
 the user tried to click. The `hand_scale` bound rejects hands that are implausibly
 near or far — usually a second person in frame or a hand reaching past the camera.
+
+**Sustain dropped `palm_facing` on 2026-08-21** (see the amendment below,
+"Sustain no longer requires palm_facing"). It used to read `hand absent, or
+not palm_facing`, matching arming's orientation requirement; the row above
+reflects the current, looser condition. The reasoning is the same as the
+finger-extension asymmetry above, one level further out: gestures rotate
+the hand as a matter of course, so a sustain condition that fights hand
+rotation works against every gesture, not only the one that exposed it.
+The consequence: turning the palm away no longer stops the system by
+itself. Dropping the hand out of frame (disarms after `DISARM_S`) or `Esc`
+are the ways to stop it now — see "Safety" below and the README.
 
 ## State machine
 

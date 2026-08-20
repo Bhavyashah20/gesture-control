@@ -173,31 +173,31 @@ def test_three_finger_recording_yields_multiple_spaces():
     before SWIPE_VEL was lowered to 0.6 -- see config.py's SWIPE_VEL
     comment.
 
-    Measuring `_detect_swipe` directly against every present frame (finger
-    posture and velocity/displacement alone, bypassing the arm/disarm gate
-    and the curl/pinch state machine) finds 5 crossings at SWIPE_VEL=0.6,
-    3 right and 2 left. Full pipeline replay -- what this test actually
-    exercises, and the only measure that matches what the running system
-    does -- yields fewer: 2, both Space("left"). The difference is real,
-    not a measurement error: every rightward swipe in this recording is
-    preceded by ~0.3-0.4 s where `palm_facing` reads False (rotating the
-    hand sideways to swipe right also rotates it edge-on to the camera),
-    long enough to trip the Gate's DISARM_S and drop the state machine out
-    of TRACKING for part of the swipe -- so `_detect_swipe` either never
-    sees the fast phase of the motion, or resumes with too little of the
-    SWIPE_WINDOW_S history left to clear SWIPE_DIST/SWIPE_VEL. Leftward
-    swipes do not trip palm_facing the same way and both register cleanly.
-    This is a Gate/palm_facing interaction, outside the scope of this
-    change (finger posture + SWIPE_VEL only) -- fixing it would mean
-    retuning DISARM_S or palm_facing against unrelated recordings, which
-    was neither requested nor measured here. Pinning the true, lower,
-    single-direction figure rather than the higher bypass count keeps this
-    test honest about what the shipped system actually does.
+    Before the 2026-08-21 gate.py change, full-pipeline replay yielded only
+    2 Space intents, both Space("left"): every rightward swipe in this
+    recording is preceded by ~0.3-0.4 s where `palm_facing` reads False
+    (rotating the hand sideways to swipe right also rotates it edge-on to
+    the camera), long enough to trip the old Gate._can_sustain's
+    palm_facing requirement and DISARM_S, dropping the state machine out of
+    TRACKING for part of each rightward swipe. That was a real gap between
+    the raw posture/velocity crossing count (5, measured by calling
+    _detect_swipe directly against every present frame, bypassing the gate)
+    and what the shipped system actually produced.
+
+    Dropping palm_facing from Gate._can_sustain (see gate.py's module
+    docstring and config.py's SWIPE_VEL comment) closes that gap: the gate
+    no longer disarms mid-swipe, so replay now recovers all 5 raw
+    crossings, 3 right and 2 left -- both directions, not just left. This
+    is the regression test for that fix: pinned as a lower bound plus a
+    both-directions check, the same convention as the scroll fixtures
+    below, so ordinary retuning doesn't break it but a regression back
+    toward direction-loss would.
     """
     out = _replay("three_finger")
     spaces = [i for i in out if isinstance(i, Space)]
-    assert len(spaces) >= 2
-    assert all(s == Space("left") for s in spaces)
+    directions = {s.direction for s in spaces}
+    assert len(spaces) >= 4
+    assert directions == {"left", "right"}
 
 
 def test_scroll_attempt_produces_a_meaningful_amount_of_scroll():

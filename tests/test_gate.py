@@ -84,9 +84,45 @@ def test_brief_dropout_does_not_disarm():
     assert g.update(feat(1.45, present=False)) is False  # 0.55s, over DISARM_S
 
 
-def test_disarms_when_palm_turns_away():
+def test_requires_palm_facing_to_arm():
+    """Arming is unchanged: palm_facing is still required to accumulate
+    ARM_DWELL_S, even with the finger count and hand_scale otherwise
+    satisfied throughout."""
+    g = Gate()
+    g.update(feat(0.00, palm=False))
+    assert g.update(feat(0.50, palm=False)) is False
+
+
+def test_stays_armed_when_palm_turns_away():
+    """The 2026-08-21 change: sustaining no longer requires palm_facing,
+    only f.present. Swiping genuinely rotates the palm off the camera (see
+    config.py's SWIPE_VEL comment and the gate.py module docstring) --
+    measured against recordings/three_finger.jsonl, the normalized palm
+    normal reaches -0.46 at p05 against a +0.39 median, and the old
+    palm-facing sustain requirement disarmed the gate mid-swipe. This
+    replaces test_disarms_when_palm_turns_away, which pinned the OLD
+    behaviour (turning the palm away disarms) -- that assertion no longer
+    holds by design, so the test is rewritten rather than kept passing by
+    coincidence.
+
+    Runs well past DISARM_S with palm=False and present=True throughout,
+    to prove the gate never disarms on palm orientation alone, not merely
+    that it survives one frame of it.
+    """
     g = Gate()
     g.update(feat(0.00))
-    g.update(feat(0.40))
-    g.update(feat(0.50, palm=False))
-    assert g.update(feat(1.10, palm=False)) is False
+    assert g.update(feat(0.40)) is True
+    for t in (0.50, 0.70, 1.00, 1.50, 5.00):
+        assert g.update(feat(t, palm=False)) is True
+
+
+def test_disarms_when_hand_absent_even_with_palm_turned_away():
+    """Sustaining still requires f.present -- dropping the palm-facing
+    sustain requirement does not also drop the presence requirement. Palm
+    orientation is irrelevant once the hand itself is gone."""
+    g = Gate()
+    g.update(feat(0.00))
+    assert g.update(feat(0.40)) is True
+    g.update(feat(0.50, palm=False, present=False))
+    assert g.update(feat(0.90, palm=False, present=False)) is True   # 0.40s absent
+    assert g.update(feat(1.10, palm=False, present=False)) is False  # 0.60s absent

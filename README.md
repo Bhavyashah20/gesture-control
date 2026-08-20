@@ -30,6 +30,16 @@ drag from that down/move/up sequence on its own, exactly as it would for a
 physical mouse, so there is no separate "hold still to drag" gesture to learn
 or mistune.
 
+**Turning your palm away does not stop the system (2026-08-21).** Arming
+still requires an open palm facing the camera, but once armed, staying
+armed only requires your hand to be visible — not facing the camera. This
+is deliberate: gestures rotate the hand (a three-finger swipe to the right
+rotates the palm edge-on to the camera for part of the motion — see
+"Tuning" below), and a system that disarms every time a gesture turns the
+hand away fights the gestures it exists to recognize. To stop the system,
+drop your hand out of frame (it disarms after 500 ms absent) or press
+`Esc`.
+
 **Stability (2026-08-11).** Three changes address "cursor too unstable for
 small targets" and "scroll does nothing," all measured against real
 recordings rather than guessed:
@@ -295,6 +305,27 @@ run together — but drives the exact same pipeline, so it combines with
 Every threshold lives in `src/gesture_control/config.py`. Change one, then run
 the replay suite to see what it broke:
 
+`ARM_DWELL_S` / `DISARM_S` (posture gate, `gate.py`) govern arming and
+disarming. Arming is strict — open palm, `hand_scale` in range, held for
+`ARM_DWELL_S` — and unchanged by the 2026-08-21 sustain change below.
+Disarming used to require either the hand absent or `palm_facing` false,
+continuously, for `DISARM_S`; sustaining now only requires the hand
+present. Measured against `recordings/three_finger.jsonl`: a rightward
+three-finger swipe rotates the palm edge-on to the camera for part of the
+motion (normalized palm normal reaching -0.46 at p05 against a +0.39
+median), which used to trip the old palm-facing sustain condition and
+disarm the system mid-swipe — the gate disarmed 3 times over the
+recording, for stretches up to 41 frames (1.4 s), with 62 of 267
+three-finger frames caught disarmed. Dropping `palm_facing` from the
+sustain condition (`Gate._can_sustain`, now just `f.present`) fixes this:
+replaying the same recording now shows zero disarms and all 267
+three-finger frames armed. This is a general fix, not a swipe-specific
+one — gestures rotate the hand by nature, so a sustain condition that
+fights that rotation works against every gesture, not just this one. See
+`gate.py`'s `Gate` docstring for the full measurement and
+`tests/test_gate.py`'s `test_stays_armed_when_palm_turns_away` for the
+pinned regression test.
+
 `PINCH2_CLOSE` / `PINCH2_OPEN` govern the double-click (middle-tip-to-thumb)
 gesture, with the same hysteresis pattern as `PINCH_CLOSE` / `PINCH_OPEN`.
 They are set well below the middle-to-thumb ratio observed while genuinely
@@ -467,15 +498,13 @@ above gets a chance to run.
   original curl-gate watches. The previously-reported stuck button from this
   same recording (an unreleased `ButtonDown` at t=14.208s) was fixed earlier
   by the mutual-exclusivity change and remains fixed
-- Space switching (2026-08-20) requires the exact three-finger posture and
-  fires reliably for leftward swipes, but a rightward three-finger swipe
-  rotates the hand edge-on to the camera for roughly 0.3-0.4 s, which is
-  long enough to trip `palm_facing` false and, via `DISARM_S`, drop the
-  system out of the armed state mid-swipe. `recordings/three_finger.jsonl`
-  replays to 2 genuine `Space("left")` switches; the rightward swipes in
-  that recording are lost to this Gate interaction, not to the swipe
-  detector itself (see `tests/test_replay.py`'s
-  `test_three_finger_recording_yields_multiple_spaces`). Fixing this would
-  mean retuning the arm/disarm gate or `palm_facing` against new
-  recordings, which is out of scope for the finger-posture and
-  `SWIPE_VEL` change made here
+- Space switching (2026-08-20) requires the exact three-finger posture.
+  Originally it fired reliably only for leftward swipes: a rightward
+  three-finger swipe rotates the hand edge-on to the camera for roughly
+  0.3-0.4 s, tripping `palm_facing` false and, via the old `_can_sustain`,
+  disarming the system mid-swipe. Fixed 2026-08-21 by dropping
+  `palm_facing` from the gate's sustain condition — see "Turning your palm
+  away does not stop the system" above and the `Gate` docstring in
+  `gate.py`. `recordings/three_finger.jsonl` now replays to 5 genuine
+  `Space` switches, 3 right and 2 left (up from 2, both left) — see
+  `tests/test_replay.py`'s `test_three_finger_recording_yields_multiple_spaces`
