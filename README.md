@@ -257,6 +257,14 @@ System Settings → Privacy & Security:
 Space switching also needs the Mission Control shortcuts `Ctrl+←` and `Ctrl+→`
 enabled in System Settings → Keyboard → Shortcuts. They are on by default.
 
+Space switching is implemented via AppleScript (`osascript` driving System
+Events — see "Space switching goes through AppleScript, not CGEvent" below),
+so it separately needs **Automation** access for your terminal to control
+"System Events", under System Settings → Privacy & Security → Automation.
+macOS prompts for this the first time a Space-switch gesture actually fires,
+not at startup — if you dismiss or deny that prompt, Space gestures will
+silently do nothing until you grant it there.
+
 ## Running
 
 ```bash
@@ -481,12 +489,13 @@ above gets a chance to run.
   scrolling turned off, scroll will feel inverted; negate `SCROLL_RATE_GAIN`
   in `config.py` as a workaround
 - If a right-click ever appears (this app posts no right-clicks of its own),
-  it indicates a modifier-flag leak: `_key` posts Control-flagged key events
-  for the Space switch gesture, and on macOS a plain left mouse-down created
+  it indicates a modifier-flag leak: on macOS a plain left mouse-down created
   without explicit flags inherits whatever modifier state is currently
-  active, so Control+click reads as a right-click. `QuartzActuator._post_mouse`
-  now explicitly clears flags (`CGEventSetFlags(ev, 0)`) on every mouse event
-  it posts to prevent this
+  active (e.g. a physically-held Control key), so Control+click reads as a
+  right-click. `QuartzActuator._post_mouse` explicitly clears flags
+  (`CGEventSetFlags(ev, 0)`) on every mouse event it posts to prevent this.
+  (Space switching itself can no longer be the source of this leak — see
+  below, it no longer posts a CGEvent at all)
 - `recordings/clutch.jsonl` (point/curl only, no pinching) now replays to
   zero button or click events of any kind, as of the 2026-08-19
   extension-gate follow-up (see "Gestures" and "Tuning" above). It
@@ -508,3 +517,27 @@ above gets a chance to run.
   `gate.py`. `recordings/three_finger.jsonl` now replays to 5 genuine
   `Space` switches, 3 right and 2 left (up from 2, both left) — see
   `tests/test_replay.py`'s `test_three_finger_recording_yields_multiple_spaces`
+- **Space switching goes through AppleScript, not CGEvent (2026-08-21).**
+  Every other intent in this app posts a synthetic CGEvent to
+  `kCGHIDEventTap`, and that mechanism reliably worked end-to-end — except
+  for Space switching, which never actually worked in real use even though
+  the gesture fired correctly and the CGEvents posted without error.
+  Confirmed live: the real keyboard's `Ctrl+←`/`Ctrl+→` switches Spaces
+  fine, Accessibility is granted, mouse CGEvents work, no Secure Input
+  holder was present, and a synthetic `Cmd+Space` posted the same way DID
+  open Spotlight — so synthetic keystrokes reach the system fine in
+  general. Four different CGEvent constructions for the Space key combo
+  (HID source + session tap, HID source + HID tap, combined source +
+  session tap, and a real Control keydown held around the arrow key) all
+  failed to move the desktop. `osascript -e 'tell application "System
+  Events" to key code 124 using control down'` DID switch it. Conclusion:
+  Mission Control's Space shortcuts are consumed by WindowServer before the
+  event tap `CGEventPost` delivers to, while AppleScript's System Events
+  path reaches them by a different route. `QuartzActuator._space_switch`
+  now shells out to `osascript` instead of using `CGEvent` — this is
+  deliberate, not an oversight, and it needs the separate Automation
+  permission described under "Permissions" above. The call runs
+  synchronously (`subprocess.run`, ~tens of ms, at most once per
+  `SWIPE_COOLDOWN_S` = 800 ms) and never raises: a failed or slow Space
+  switch prints an actionable message to stderr instead of taking down the
+  pipeline mid-gesture.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import Callable
 
 from .types import ButtonDown, ButtonUp, Click, Intent, Move, Scroll, Space
@@ -91,6 +93,9 @@ class QuartzActuator:
         bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
         self._w = float(bounds.size.width)
         self._h = float(bounds.size.height)
+        # Injected as a plain attribute (same pattern as self._q) so tests
+        # can swap in a fake without touching the real subprocess module.
+        self._run = subprocess.run
 
     def _cursor(self) -> tuple[float, float]:
         loc = self._q.CGEventGetLocation(self._q.CGEventCreate(None))
@@ -107,9 +112,11 @@ class QuartzActuator:
         # A CGEvent created without explicit flags inherits the current
         # system modifier state. Every synthesized mouse event here is a
         # plain left-button action, so clear unconditionally: without this,
-        # a Control-flagged Space key event (see _key) posted shortly before
-        # a click can leave its flag inherited onto the click, and
-        # Control+click is right-click on macOS.
+        # a real Control key the user is physically holding down (or was,
+        # moments ago) can leave its flag inherited onto the click, and
+        # Control+click is right-click on macOS. (Space switching no longer
+        # posts a CGEvent at all -- see _space_switch -- so it is not a
+        # source of this leak any more, but the physical keyboard still is.)
         self._q.CGEventSetFlags(ev, 0)
         self._q.CGEventPost(self._q.kCGHIDEventTap, ev)
 
@@ -124,11 +131,73 @@ class QuartzActuator:
         )
         self._post_mouse(kind, nx, ny)
 
-    def _key(self, code: int) -> None:
-        for down in (True, False):
-            ev = self._q.CGEventCreateKeyboardEvent(None, code, down)
-            self._q.CGEventSetFlags(ev, self._q.kCGEventFlagMaskControl)
-            self._q.CGEventPost(self._q.kCGHIDEventTap, ev)
+    def _space_switch(self, direction: str) -> None:
+        """Switch Spaces via AppleScript instead of a CGEvent.
+
+        Every other intent in this module posts a CGEvent to
+        kCGHIDEventTap -- that is the whole point of this class. Space is
+        the one deliberate exception, and it looks like an oversight if you
+        don't know why: it isn't.
+
+        Confirmed live, on the machine this runs on: the real keyboard's
+        Ctrl+Left/Right switches Spaces fine, and Mission Control's
+        shortcuts are enabled (11 Spaces exist, 3 fullscreen, so there was
+        somewhere to go). Accessibility is granted; mouse CGEvents work; no
+        Secure Input holder was present. Four different CGEvent
+        constructions were tried for the Space key combo -- HID source with
+        a session tap, HID source with a HID tap, combined source with a
+        session tap, and a real Control keydown physically held around the
+        arrow keydown/up -- and none of them moved the desktop. Meanwhile a
+        synthetic Cmd+Space posted the exact same way DID open Spotlight, so
+        synthetic keystrokes reach the system fine in general -- this is
+        specific to Mission Control's Space shortcuts. And
+        `osascript -e 'tell application "System Events" to key code 124
+        using control down'` DID switch the desktop. The working theory:
+        Mission Control's Space shortcuts are consumed by WindowServer
+        before the event-tap CGEventPost delivers to, while AppleScript's
+        System Events path reaches them by a different route. Do not
+        collapse this back onto CGEvent/_key -- that was the actual bug and
+        it was tried and measured, not merely assumed.
+
+        Runs subprocess.run synchronously (blocking the caller) rather than
+        firing it off in a background thread or process. An osascript spawn
+        costs on the order of tens of milliseconds; a blocked tick loop
+        costs roughly 3 dropped camera frames per 100ms. Space switches are
+        also rate-limited upstream by SWIPE_COOLDOWN_S (800ms), so this can
+        run at most once every 800ms -- a one-tick (tens of ms) stall on an
+        already-rare, already-deliberate gesture is an acceptable trade for
+        the simplicity of a synchronous call: no thread/process bookkeeping,
+        no risk of two osascript calls racing or piling up, and a failure
+        path that is trivial to test and to reason about.
+
+        Never raises: a failed or slow Space switch must not take down the
+        gesture pipeline mid-gesture. Failures are reported to stderr
+        instead of swallowed, since a silent failure here just looks like
+        "gestures stopped working" with no clue why.
+        """
+        code = KEY_RIGHT_ARROW if direction == "right" else KEY_LEFT_ARROW
+        script = (
+            f'tell application "System Events" to key code {code} '
+            "using control down"
+        )
+        try:
+            result = self._run(
+                ["osascript", "-e", script], capture_output=True, timeout=2
+            )
+            if result.returncode != 0:
+                detail = result.stderr.decode(errors="replace").strip()
+                self._report_space_failure(detail or f"exit {result.returncode}")
+        except Exception as exc:
+            self._report_space_failure(str(exc))
+
+    @staticmethod
+    def _report_space_failure(detail: str) -> None:
+        print(
+            f"gesture_control: Space switch failed ({detail}); grant "
+            "System Events Automation access in System Settings > Privacy "
+            "& Security > Automation",
+            file=sys.stderr,
+        )
 
     def apply(self, intents: list[Intent]) -> None:
         for i in intents:
@@ -173,7 +242,7 @@ class QuartzActuator:
                     self._q.CGEventSetFlags(ev, 0)
                     self._q.CGEventPost(self._q.kCGHIDEventTap, ev)
                 case Space(d):
-                    self._key(KEY_RIGHT_ARROW if d == "right" else KEY_LEFT_ARROW)
+                    self._space_switch(d)
 
     def release_all(self) -> None:
         if self.button_down:

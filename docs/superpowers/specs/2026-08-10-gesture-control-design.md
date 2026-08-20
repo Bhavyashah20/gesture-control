@@ -7,7 +7,87 @@ thumb gate; scroll thumb gate made asymmetric; pinch requires an extended
 finger); amended 2026-08-20 (rate-based scrolling replaces displacement;
 absent frames must not reach the movement path; scroll exit debounce;
 Space switch requires an exact three-finger posture); amended 2026-08-21
-(posture gate sustain no longer requires palm_facing)
+(posture gate sustain no longer requires palm_facing; Space switching goes
+through AppleScript, not CGEvent)
+
+## Amendment (2026-08-21): Space switching goes through AppleScript, not CGEvent
+
+**Space switching never actually worked in real use**, despite passing every
+existing test. The gesture fired correctly and the `Space(left/right)`
+intent reached `QuartzActuator`, which posted `Ctrl+←`/`Ctrl+→` as CGEvents
+without error — but the desktop never switched. This was not a gate,
+posture, or velocity problem (the previous amendment's fixes did not touch
+this); it was in the actuator, one layer downstream of everything this
+document otherwise tunes.
+
+Diagnosed live, on the machine running this app:
+
+- The real keyboard's `Ctrl+→` switches Spaces normally, and Mission
+  Control's shortcuts are enabled in System Settings (11 Spaces exist, 3 of
+  them fullscreen, so there was somewhere to go).
+- Accessibility is granted, and this app's mouse CGEvents work correctly.
+- No Secure Input holder was present (which would block synthetic
+  keystrokes system-wide).
+- Four CGEvent constructions for the Space key combo were tried and all
+  failed to move the desktop: HID source with a session tap, HID source
+  with a HID tap, combined source with a session tap, and a real Control
+  keydown physically held around the arrow key's down/up pair.
+- A synthetic `Cmd+Space` posted the exact same way (`kCGHIDEventTap`) DID
+  open Spotlight — so synthetic keystrokes reach the system fine in
+  general; this is specific to Mission Control's Space shortcuts.
+- `osascript -e 'tell application "System Events" to key code 124 using
+  control down'` DID switch the desktop.
+
+**Conclusion:** Mission Control's Space shortcuts are handled by
+WindowServer before the event tap `CGEventPost` delivers to, so
+CGEvent-posted keys never reach them, while AppleScript's System Events
+path does. This is a property of how macOS routes that specific shortcut,
+not a bug in this app's CGEvent usage elsewhere — every other intent
+(`Move`, `Click`, `ButtonDown`/`Up`, `Scroll`) continues to work correctly
+via CGEvent and is unchanged.
+
+**Fix:** `QuartzActuator._space_switch` (formerly `_key`, now removed —
+nothing else called it) shells out via `subprocess.run` to `osascript`
+instead of posting a CGEvent, with `capture_output=True` and a 2-second
+timeout. It never raises: a failed or slow AppleScript call prints an
+actionable one-line message to stderr (pointing at the System
+Events Automation permission) and returns, since a broken Space switch
+must not take down the gesture pipeline mid-gesture. The `Space` entry in
+the actuator table below is updated accordingly.
+
+**Cost, considered and accepted as synchronous (blocking):** spawning
+`osascript` costs on the order of tens of milliseconds. `SWIPE_COOLDOWN_S`
+is 800 ms, so this can fire at most once every 800 ms — it cannot back up
+the tick loop the way a per-frame call would. Blocking the tick loop for
+~100 ms drops roughly 3 camera frames; a single tens-of-ms stall on an
+already-rare, already-deliberate gesture is judged an acceptable trade
+against the complexity of firing it non-blocking (a background thread or
+process would need its own error handling, and risks a second Space
+switch overlapping the first if the cooldown were ever shortened).
+
+**Permissions:** this adds a requirement beyond the Accessibility and
+Camera access this app already needed — Automation access for the running
+terminal to control "System Events" (System Settings → Privacy & Security
+→ Automation). macOS prompts for this the first time a Space-switch
+gesture actually fires, not at startup; declining it leaves Space
+gestures silently inert until granted. See "Permissions" above and the
+README.
+
+**Testing:** `tests/test_quartz_actuator.py` no longer asserts CGEvent key
+events for `Space` (that assertion encoded the broken behaviour). It
+injects a fake subprocess runner via `self._run` (mirroring the existing
+`self._q` fake-Quartz pattern) and asserts: `Space("right")` invokes
+`osascript` with key code 124 and `using control down`; `Space("left")`
+with key code 123; a non-zero return code or a `subprocess.TimeoutExpired`
+does not raise out of `apply`; and a failure prints to stderr. No test
+invokes real `osascript`.
+
+**Replay is unaffected by construction.** `recorder.replay()` runs frames
+through `StateMachine` only and never touches `QuartzActuator`, so this
+change — being entirely inside the actuator, downstream of every intent
+the state machine emits — cannot move any replay fixture's intent counts.
+Verified: all fixtures replay to the same counts as before this change,
+including `reaching_past.jsonl` and `talking_hands.jsonl` at zero.
 
 ## Amendment (2026-08-21): sustain no longer requires palm_facing
 
@@ -867,16 +947,23 @@ The order of priority, which resolves every trade-off below:
 |---|---|---|
 | Camera | the terminal running Python | reading webcam frames |
 | Accessibility | the terminal running Python | synthesizing mouse/key events |
+| Automation (System Events) | the terminal running Python | Space switching via `osascript` — see "Amendment (2026-08-21): Space switching goes through AppleScript, not CGEvent" |
 
-Both are granted once to the terminal application (System Settings → Privacy &
-Security). Startup performs a preflight check and exits with actionable instructions
-if either is missing:
+Camera and Accessibility are granted once to the terminal application (System
+Settings → Privacy & Security). Startup performs a preflight check and exits
+with actionable instructions if either is missing:
 
 - Accessibility: verify with `AXIsProcessTrusted()`
 - Camera: verify by opening the capture device and reading one frame
 - Mission Control shortcuts: `Ctrl+←` / `Ctrl+→` must be enabled (on by default) for
   Space switching. Cannot be read programmatically without extra entitlements, so
   the startup banner states the requirement rather than asserting it.
+- Automation (System Events) is *not* covered by the startup preflight: macOS
+  only prompts for it the first time `osascript` actually tries to drive
+  System Events, i.e. on the first real Space-switch gesture. If that prompt
+  is dismissed or denied, `QuartzActuator._space_switch` fails silently from
+  the user's point of view (it prints to stderr, not to any UI) until access
+  is granted in System Settings → Privacy & Security → Automation.
 
 ## Architecture
 
@@ -1458,7 +1545,7 @@ introduce a sign error).
 | `Move` during `Pressed` | `kCGEventLeftMouseDragged` |
 | `ButtonUp` | `LeftMouseUp` |
 | `Scroll` | `CGEventCreateScrollWheelEvent`, `kCGScrollEventUnitPixel` |
-| `Space(left/right)` | keycode 123 / 124 with `kCGEventFlagMaskControl` |
+| `Space(left/right)` | **Not CGEvent.** `osascript -e 'tell application "System Events" to key code 123/124 using control down'` via `subprocess.run`. See "Amendment (2026-08-21): Space switching goes through AppleScript, not CGEvent" below. |
 
 `ButtonDown` / `ButtonUp` are a rename of what this table originally called
 `DragStart` / `DragEnd` — the Quartz calls were always exactly this (a plain
