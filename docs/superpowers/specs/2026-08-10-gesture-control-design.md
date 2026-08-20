@@ -5,7 +5,100 @@ Status: Approved and implemented; amended 2026-08-11 (direct-manipulation
 redesign; stability fixes); amended 2026-08-19 (scroll acceleration; scroll
 thumb gate; scroll thumb gate made asymmetric; pinch requires an extended
 finger); amended 2026-08-20 (rate-based scrolling replaces displacement;
-absent frames must not reach the movement path)
+absent frames must not reach the movement path; scroll exit debounce)
+
+## Amendment (2026-08-20 follow-up): scroll exit debounce
+
+**A correctly performed gesture produced next to nothing.** The user
+recorded `recordings/scroll_hold.jsonl`, 15 s of correctly performing the
+rate-scroll gesture, and it produced 10 `Scroll` events totalling 47 px.
+The gesture itself was not the problem: `(True, True, False, False)` is the
+dominant finger pattern at 224 of 361 present frames, exactly the intended
+shape.
+
+The problem was that the scroll gate flickered. Over those 15 s there were
+16 unbroken runs of a satisfied `_can_stay_in_scroll` predicate; the
+longest was 52 frames (1.73 s), and many were 1-3 frames. The finger
+condition dropped out 13 times and the thumb condition 16 times —
+single-frame landmark detection noise, not the user changing their hand.
+Each break exited `Scroll`, and each re-entry re-recorded the rate-scroll
+neutral at the hand's then-current position (see the entry mechanism in
+"Amendment (2026-08-20): rate-based scrolling replaces displacement"
+above). So the offset that drives scroll speed was continuously reset to
+zero and never accumulated — hence 47 px.
+
+**The fix: `Scroll` is reluctant to leave, one level further than the
+existing thumb hysteresis.** `THUMB_TUCK_RELEASE` (2026-08-19) already made
+leaving `Scroll` reluctant with respect to the thumb specifically, but the
+finger conditions (index/middle extended, ring not) had no hysteresis at
+all, and thumb hysteresis alone was not wide enough to absorb frames where
+the *finger* reading was the one that flickered. This follow-up sits on top
+of the whole predicate, mirroring the posture gate's own arm/disarm
+asymmetry (`ARM_DWELL_S`/`DISARM_S`) one level further in:
+
+```python
+SCROLL_EXIT_S = 0.35
+```
+
+While in `Scroll`, when `_can_stay_in_scroll(f)` fails, the state machine
+starts (or continues) a debounce timer, `_scroll_exit_since`, instead of
+leaving on the spot — the same pattern as `Gate._lost_since`. Only once
+that timer has run continuously for `SCROLL_EXIT_S` does `Scroll` actually
+transition to `Tracking`, and only then is `_scroll_neutral` cleared. If
+the posture is satisfied again before the timer elapses, it is reset to
+`None` and `Scroll` continues uninterrupted — critically, `_scroll_neutral`
+is left exactly as it was, so a fragment that recovers within the debounce
+window keeps scrolling at the same rate it was already at, rather than
+starting over from zero.
+
+**What happens to scroll output during the debounce window.** The frame's
+`Scroll` computation (offset from `_scroll_neutral`, speed, `px = speed ×
+dt`) runs exactly as it would with the posture satisfied, regardless of
+whether `_can_stay_in_scroll` passed or failed that particular frame — the
+debounce timer is bookkeeping for the eventual transition decision, not a
+gate on this frame's output. Two choices were considered:
+
+1. **Suppress `Scroll` on a posture-failing frame, keep the state and
+   neutral.** Philosophically cleaner — the invariant "the posture holds
+   this frame" would stay true of every frame that actually emits `Scroll`
+   — but it introduces a real gap: a hand held at a sustained offset would
+   visibly pause for up to `SCROLL_EXIT_S` on every flicker, even though
+   nothing about the hand's actual position changed.
+2. **Compute output normally regardless of this frame's posture reading
+   (chosen).** Mirrors what the posture gate already does during its own
+   `DISARM_S` grace window: when `_can_sustain` fails but the gate hasn't
+   yet disarmed, the rest of the pipeline (cursor tracking, in that case)
+   keeps running on that frame's real data unmodified — the grace window
+   delays the *disarm decision*, it does not pause everything else in the
+   meantime. Applying the same principle here means a single flickered
+   frame produces zero visible effect: no stutter, no pause, no reset. The
+   cost is that a frame whose finger or thumb reading currently fails
+   `_can_stay_in_scroll` can still emit a `Scroll` intent, on the theory
+   that the reading is what's noisy, not the underlying hand position (the
+   One Euro filter already dampens single-frame position noise
+   independently).
+
+Option 2 was implemented, for consistency with the existing precedent in
+this codebase and because it fully eliminates the stutter, not just
+shrinks it.
+
+**Verified against every fixture.** Replayed `recordings/scroll_hold.jsonl`:
+10 events / 47 px before → 36 events / ~820 px after — roughly 17x, and
+comfortably "dramatically more" than the pre-fix number, confirming the
+flicker diagnosis rather than some other mechanism.
+`recordings/scroll_attempt.jsonl` also increases (22 → 33 events, ~2097 →
+~4011 px), since the same class of flicker affected it, just less
+severely — its replay test asserts lower bounds, not exact figures, so this
+is not a regression. `reaching_past.jsonl` and `talking_hands.jsonl` still
+replay to zero intents of any kind (non-negotiable, unchanged).
+`middle_pinch.jsonl` still produces zero `Scroll` events: the debounce only
+extends how long an *already-active* `Scroll` survives a flicker on exit,
+it has no effect on entry, so the strict entry-side thumb-tuck bar
+(`THUMB_TUCK_MAX`) that keeps a middle-pinch double-click out of `Scroll`
+in the first place is untouched.
+
+`recordings/scroll_hold.jsonl` is committed as a fixture and is now the
+regression test for this entire class of bug — see "Testing" below.
 
 ## Amendment (2026-08-20): absent frames must not reach the movement path
 
@@ -761,7 +854,7 @@ drag. All states fall back to `Disarmed` when the gate drops; the gate itself
 | `Tracking` or `Frozen` | (unchanged) | index not curled, pinch closes (same extension-gated condition) and the **middle** channel is the closer one; emit `Click(2)`, no state change |
 | `Pressed` | `Tracking` | the pinch releases: `pinch_ratio` > 0.45 AND `pinch2_ratio` > 0.40 (both fingers clear); emit `ButtonUp` |
 | `Pressed` | `Frozen` | index curls while a pinch is open: `index_curl_ratio` < `INDEX_CURL_CLOSE`; emit `ButtonUp` first (see "The clutch: freezing the cursor" below) |
-| `Scroll` | `Tracking` | scroll posture lost: finger shape changes, or thumb clears `THUMB_TUCK_RELEASE` (`thumb_tuck_ratio` >= 0.95, looser than the 0.70 entry bar — see "Amendment (2026-08-19): scroll thumb gate made asymmetric") — `_can_stay_in_scroll()` returns false |
+| `Scroll` | `Tracking` | scroll posture (finger shape, or thumb past `THUMB_TUCK_RELEASE`) absent **continuously** for `SCROLL_EXIT_S` (0.35 s, added 2026-08-20 follow-up — see "Amendment (2026-08-20 follow-up): scroll exit debounce"); a posture failure shorter than that is absorbed and `Scroll` continues uninterrupted, with `_scroll_neutral` untouched |
 | any | `Disarmed` | posture gate disarms; releases the button first if held (see Safety) |
 
 **Curl and pinch are mutually exclusive.** Curl is evaluated before pinch on
@@ -782,7 +875,7 @@ Beyond transitions, three states are active on every frame:
 |---|---|
 | `Tracking` | computes a `Move(dx, dy)` candidate from the filtered `cursor_ref` delta, then runs it through the jitter deadzone below — most frames accumulate silently, and a `Move` is emitted only when the deadzone crosses |
 | `Pressed` | same candidate-then-deadzone pipeline, actuated as `LeftMouseDragged` when it does emit |
-| `Scroll` | rate-based (2026-08-20): emits `Scroll(dy)` every frame the hand's offset from the entry-recorded `neutral` clears `SCROLL_NEUTRAL_DEADZONE` and the resulting per-frame amount clears `SCROLL_MIN_PX` — no hand movement between frames is required, unlike `Move` above; see "Amendment (2026-08-20): rate-based scrolling replaces displacement" above |
+| `Scroll` | rate-based (2026-08-20): emits `Scroll(dy)` every frame the hand's offset from the entry-recorded `neutral` clears `SCROLL_NEUTRAL_DEADZONE` and the resulting per-frame amount clears `SCROLL_MIN_PX` — no hand movement between frames is required, unlike `Move` above; see "Amendment (2026-08-20): rate-based scrolling replaces displacement" above. This computation runs identically whether or not the current frame's posture reading satisfies `_can_stay_in_scroll` — see "Amendment (2026-08-20 follow-up): scroll exit debounce" for why a posture-failing frame during the exit debounce still produces normal output |
 
 `Frozen` and `Disarmed` emit nothing. This is the whole mechanism: the cursor
 does not move in `Frozen` — that is what makes the clutch a clutch — and
@@ -1219,7 +1312,14 @@ runtime.
   survives the dropout and the disarm watchdog still releases it if the
   gate eventually drops; `Scroll` emits nothing during a dropout and its
   `neutral` is not corrupted by it — see "Amendment (2026-08-20): absent
-  frames must not reach the movement path")
+  frames must not reach the movement path"); the scroll exit debounce
+  (added 2026-08-20 follow-up: the posture failing for less than
+  `SCROLL_EXIT_S` does not leave `Scroll`; failing for longer than
+  `SCROLL_EXIT_S` does; the neutral is not re-recorded when the posture
+  recovers within the debounce window, so a sustained offset that briefly
+  flickers keeps scrolling at the same rate rather than resetting to zero;
+  re-entering `Scroll` after a genuine exit does record a fresh neutral —
+  see "Amendment (2026-08-20 follow-up): scroll exit debounce")
 - `filters`: One Euro converges on constant input; gain curve is monotonic and
   respects its clamps
 
@@ -1255,7 +1355,17 @@ press and release, nothing else" above. Under the new model, with no
 travel or dwell budget left to lose registrations to, its replay yields more
 `Click(2)`s than it did under any prior rule (see the redesign report for
 the exact count) — the closer-finger check is still what keeps those closures
-from also firing a spurious `ButtonDown`.
+from also firing a spurious `ButtonDown`. It is also the regression fixture
+for the scroll-entry thumb gate not being weakened by the 2026-08-20
+follow-up exit debounce below: it must still replay to zero `Scroll` events.
+
+`recordings/scroll_hold.jsonl` (added 2026-08-20 follow-up) is 15 s of a
+correctly performed rate-scroll hold that exposed the scroll-exit-flicker
+bug — see "Amendment (2026-08-20 follow-up): scroll exit debounce" above.
+It is the regression fixture for that entire class of bug: replay must
+produce substantially more than the pre-fix 47 px (lower bounds, ~820 px
+measured, same non-exact-figure convention as `scroll_attempt.jsonl`'s
+magnitude test above).
 
 The false-positive fixtures (reaching past, talking hands) are the
 regression net that lets thresholds be retuned later without silently
@@ -1328,6 +1438,7 @@ filter) are unchanged by this redesign.
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no single scroll event is emitted; unchanged by the 2026-08-20 rate-based redesign, now applied to the per-frame `speed × dt` amount instead of a raw displacement |
 | `THUMB_TUCK_MAX` | 0.70 | scroll entry additionally requires `thumb_tuck_ratio` below this (added 2026-08-19) — see "Amendment (2026-08-19): scroll requires a tucked thumb" above. Keeps a middle-pinch double-click, which extends the thumb to meet the middle fingertip, from being misread as scroll. Measured medians: scroll 0.55, middle-pinch 0.86, index clicks 0.90; 0.70 keeps 195 of 260 genuine scroll frames while rejecting every colliding frame |
 | `THUMB_TUCK_RELEASE` | 0.95 | scroll exit uses this instead of `THUMB_TUCK_MAX` (added 2026-08-19 follow-up) — see "Amendment (2026-08-19): scroll thumb gate made asymmetric" above. Must stay above `THUMB_TUCK_MAX` (asserted by `test_thumb_tuck_thresholds_have_hysteresis_gap`). Absorbs a momentary thumb un-tuck mid-scroll that would otherwise drop into `Tracking` and let a stray pinch reading fire an unintended click; a genuine untuck past 0.95 still exits. Does not, on its own, remove every spurious click observed on `recordings/scroll_attempt.jsonl` — some come from a different mechanism (`Scroll` failing to *enter* during a curl/pinch sequence where the thumb never drops below `THUMB_TUCK_MAX`), which this constant cannot address |
+| `SCROLL_EXIT_S` | 0.35 | how long the whole scroll posture must be absent continuously before `Scroll` is actually left (added 2026-08-20 follow-up) — see "Amendment (2026-08-20 follow-up): scroll exit debounce" above. Diagnosed on `recordings/scroll_hold.jsonl`: single-frame landmark noise broke a 15 s correctly-performed hold into 16 fragments (longest 1.73 s), each re-entering `Scroll` and re-recording the neutral, for a total of 47 px instead of a real scroll. At 0.35 s that recording replays to ~820 px (36 events) instead |
 | `MOVE_DEADZONE_PX` | 2.0 | jitter deadzone for `Move` (added 2026-08-11) — see "The jitter deadzone" above. Sub-threshold pixel deltas accumulate in a residual instead of being emitted or dropped, so tremor cancels but slow deliberate movement still arrives |
 | `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |
 | `SWIPE_COOLDOWN_MS` | 800 | prevents multi-Space skips |

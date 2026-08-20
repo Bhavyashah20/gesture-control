@@ -166,6 +166,46 @@ follow-up) is what stopped `SCROLL` from picking that segment up. This is a
 different mechanism than the one diagnosed, and out of scope for this fix —
 see the follow-up report for the full trace.
 
+**Scroll is reluctant to leave (2026-08-20 follow-up).** The user recorded
+`recordings/scroll_hold.jsonl`, 15 s of correctly performed rate-scroll
+holding, and it produced only 10 `Scroll` events totalling 47 px — next to
+nothing. The gesture was not the problem: `(True, True, False, False)` is
+the dominant finger pattern at 224 of 361 present frames, exactly the
+intended shape. The problem was that the scroll gate flickered — over
+those 15 s there were 16 unbroken runs of a satisfied gate, the longest
+only 1.73 s, from single-frame landmark noise dropping the finger or thumb
+condition. Every break exited `Scroll`, and every re-entry re-recorded the
+rate neutral at the hand's then-current position, so the offset driving
+scroll speed was continuously reset to zero and never accumulated.
+
+The fix mirrors the posture gate's own arm/disarm asymmetry (see
+`ARM_DWELL_S`/`DISARM_S` above) one level further in: `Scroll` now requires
+the posture to be absent **continuously** for `SCROLL_EXIT_S` (0.35 s)
+before it is actually left, not just absent on a single frame. While that
+debounce timer is running, scroll behaves exactly as if the posture were
+still satisfied — offset, speed, and the resulting `Scroll` output are
+computed from the frame's real hand position regardless, so a single
+flickered frame produces no visible stutter, the same way the posture
+gate's own `DISARM_S` grace window doesn't pause cursor tracking while its
+sustain check is momentarily false. The neutral is only cleared, and only
+re-recorded, on an actual exit-then-re-entry — a fragment that recovers
+within the debounce window keeps scrolling at the same rate it was
+already at, never resetting to zero. This debounce sits on top of the
+*whole* posture predicate, covering the finger conditions too, which
+previously had no hysteresis at all (only the thumb had
+`THUMB_TUCK_RELEASE`).
+
+Replayed against `recordings/scroll_hold.jsonl`: 10 events / 47 px before →
+36 events / ~820 px after, roughly 17x. `recordings/scroll_attempt.jsonl`
+also benefits (22 → 33 events, ~2097 → ~4011 px) since the same flicker
+affected it, though less severely. `reaching_past.jsonl` and
+`talking_hands.jsonl` still replay to zero intents, and
+`middle_pinch.jsonl` still produces zero `Scroll` events — the debounce
+only extends how long an already-active `Scroll` survives a flicker, it
+cannot cause `Scroll` to be entered in the first place, so the strict
+entry-side thumb-tuck bar (`THUMB_TUCK_MAX`) is untouched. See "Tuning"
+below for `SCROLL_EXIT_S`.
+
 This replaces an earlier design where a pinch meant both "move the cursor"
 and, if held still, "start a drag" — which meant any pause while aiming a
 pinch could be misread as the start of a drag. No dwell threshold separated
@@ -337,6 +377,18 @@ exit; it must stay above `THUMB_TUCK_MAX` (enforced by
 `test_thumb_tuck_thresholds_have_hysteresis_gap`). See the "Scroll thumb
 gate is asymmetric" paragraph above for what this fix did and did not fix
 against `recordings/scroll_attempt.jsonl`.
+
+`SCROLL_EXIT_S` (2026-08-20 follow-up) governs how long the *whole* scroll
+posture (finger shape and thumb together, via `_can_stay_in_scroll`) must
+be continuously absent before `Scroll` is actually left — see "Scroll is
+reluctant to leave" above. Diagnosed on `recordings/scroll_hold.jsonl`:
+single-frame landmark noise broke a 15 s correctly-performed hold into 16
+fragments, the longest only 1.73 s, and each fragment re-entered `Scroll`
+and re-recorded the neutral, producing 47 px total instead of a real
+scroll. At `0.35` s the fix raised that to ~820 px (36 events) on the same
+recording. Raising it further trades a slower reaction to a genuine exit
+for more flicker absorption; lowering it does the opposite and moves back
+toward the original bug.
 
 `MOVE_DEADZONE_PX` (2026-08-11) governs the jitter deadzone: sub-threshold
 per-frame `Move` deltas accumulate in a residual instead of being emitted or

@@ -193,6 +193,48 @@ def test_scroll_attempt_produces_a_meaningful_amount_of_scroll():
     assert total > 500.0
 
 
+def test_scroll_hold_produces_substantial_scrolling():
+    """recordings/scroll_hold.jsonl (added 2026-08-20): 15 s of a correctly
+    performed rate-scroll hold -- (True, True, False, False) is the
+    dominant finger pattern at 224 of 361 present frames. Before the
+    SCROLL_EXIT_S exit debounce, this replayed to only 10 Scroll events
+    totalling 47 px: the gate satisfied by the posture broke into 16
+    unbroken runs (longest 1.73 s) from single-frame landmark noise on the
+    finger and thumb conditions, and every break re-entered SCROLL,
+    re-recording the rate neutral at the hand's then-current position, so
+    the offset that drives scroll speed was continuously reset to zero and
+    never accumulated.
+
+    This is the regression fixture for that entire class of bug -- a
+    correctly performed hold gesture must produce substantial scrolling,
+    not next-to-nothing. Measured after the SCROLL_EXIT_S fix: 36 Scroll
+    events totalling ~820 px, about 17x the pre-fix total. Lower bounds
+    here, not exact figures (same convention as
+    test_scroll_attempt_produces_a_meaningful_amount_of_scroll above), so
+    ordinary retuning doesn't break this test -- but a regression back
+    toward the pre-fix numbers should.
+    """
+    out = _replay("scroll_hold")
+    scrolls = [i for i in out if isinstance(i, Scroll)]
+    assert len(scrolls) >= 20
+    total = sum(abs(s.dy) for s in scrolls)
+    assert total > 400.0
+
+
+def test_middle_pinch_recording_still_yields_zero_scroll():
+    """Non-negotiable: the SCROLL_EXIT_S debounce added to fix
+    recordings/scroll_hold.jsonl must not weaken the thumb requirement that
+    keeps a middle-pinch double-click from being read as scroll (see
+    config.py's THUMB_TUCK_MAX comment). The debounce only extends how long
+    an already-active SCROLL stays alive through a flicker -- it cannot, on
+    its own, cause SCROLL to be entered in the first place, so this
+    recording (which never satisfies the strict entry thumb-tuck bar while
+    middle-pinching) must still produce zero Scroll events.
+    """
+    out = _replay("middle_pinch")
+    assert not any(isinstance(i, Scroll) for i in out)
+
+
 def test_middle_pinch_recording_yields_click_two_and_still_proves_disambiguation():
     """recordings/middle_pinch.jsonl: 15 s, 8 deliberate middle-pinches,
     plus one accidental hold and two genuine index pinches (see the spec).

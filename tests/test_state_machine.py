@@ -674,7 +674,9 @@ def test_scroll_stays_when_thumb_briefly_untucks_between_max_and_release():
 def test_scroll_exits_when_thumb_untucks_past_release():
     """Unlike a momentary un-tuck (see the test above), a thumb that
     genuinely comes off the palm -- past THUMB_TUCK_RELEASE, on the way to
-    a real middle-pinch double-click -- must still eject scroll."""
+    a real middle-pinch double-click -- must still eject scroll, once it
+    has stayed off the palm continuously for SCROLL_EXIT_S (see
+    config.py's comment and the exit-debounce tests below)."""
     sm = StateMachine()
     t = arm(sm)
     tucked = config.THUMB_TUCK_MAX - 0.10
@@ -683,6 +685,8 @@ def test_scroll_exits_when_thumb_untucks_past_release():
     sm.update(feat(t + 0.25, fingers=TWO, tuck=tucked))
     assert sm.state is State.SCROLL
     sm.update(feat(t + 0.30, fingers=TWO, tuck=untucked))
+    assert sm.state is State.SCROLL  # the exit debounce absorbs the first failing frame
+    sm.update(feat(t + 0.30 + config.SCROLL_EXIT_S + 0.05, fingers=TWO, tuck=untucked))
     assert sm.state is State.TRACKING
 
 
@@ -821,6 +825,12 @@ def test_scroll_neutral_is_re_recorded_on_each_entry():
     next transition -- otherwise a neutral snapshot taken mid-transient
     would not equal the position it's later compared against, which is a
     filter-settling artifact, not the bug this test targets.
+
+    The reposition phase below must hold the failing posture continuously
+    for longer than SCROLL_EXIT_S (see config.py's comment and the
+    exit-debounce tests) so this exercises a genuine exit, not a debounced
+    flicker -- otherwise the machine would still be in SCROLL, not
+    TRACKING, when the assertion below runs.
     """
     sm = StateMachine()
     t = arm(sm)
@@ -834,8 +844,10 @@ def test_scroll_neutral_is_re_recorded_on_each_entry():
     assert sm.state is State.SCROLL
 
     # Reposition to a very different height and let the filter settle
-    # there before re-entering.
-    for _ in range(10):
+    # there before re-entering. Held well past SCROLL_EXIT_S so this is a
+    # genuine exit, not an absorbed flicker.
+    reposition_frames = math.ceil(config.SCROLL_EXIT_S / dt) + 3
+    for _ in range(reposition_frames):
         t_now += dt
         sm.update(feat(t_now, ref=(0.5, 0.8)))
     assert sm.state is State.TRACKING
@@ -854,12 +866,132 @@ def test_scroll_neutral_is_re_recorded_on_each_entry():
 
 
 def test_losing_two_finger_posture_leaves_scroll():
+    """Losing the finger posture ejects SCROLL, but only once it has been
+    absent continuously for SCROLL_EXIT_S -- see the exit-debounce tests
+    below for the property that makes this reluctant rather than instant."""
     sm = StateMachine()
     t = arm(sm)
     sm.update(feat(t, fingers=TWO))
     sm.update(feat(t + 0.25, fingers=TWO))
-    sm.update(feat(t + 0.40))
+    assert sm.state is State.SCROLL
+    sm.update(feat(t + 0.40, fingers=FULLY_OPEN))
+    assert sm.state is State.SCROLL  # single failing frame, absorbed
+    sm.update(feat(t + 0.40 + config.SCROLL_EXIT_S + 0.05, fingers=FULLY_OPEN))
     assert sm.state is State.TRACKING
+
+
+# --- Scroll exit debounce (SCROLL_EXIT_S) ---
+#
+# Diagnosed on the user's recordings/scroll_hold.jsonl: a correctly
+# performed 15 s rate-scroll hold broke into 16 fragments, the longest only
+# 1.73 s, purely from single-frame landmark noise dropping the finger or
+# thumb condition. Each fragment re-entered SCROLL and re-recorded the rate
+# neutral at the hand's then-current position, so the offset driving scroll
+# speed was continuously reset to zero and the whole gesture produced 47 px.
+# The fix mirrors gate.py's arm/disarm asymmetry: SCROLL requires the
+# posture to be absent CONTINUOUSLY for SCROLL_EXIT_S before it is actually
+# left, exactly like DISARM_S for the posture gate.
+
+
+def test_posture_failing_for_less_than_exit_debounce_does_not_leave_scroll():
+    sm = StateMachine()
+    t = arm(sm)
+    t_scroll = _enter_scroll(sm, t)
+    sm.update(feat(t_scroll + 0.01, fingers=FULLY_OPEN, ref=(0.5, 0.5)))
+    assert sm.state is State.SCROLL
+    sm.update(feat(
+        t_scroll + 0.01 + config.SCROLL_EXIT_S * 0.5,
+        fingers=FULLY_OPEN, ref=(0.5, 0.5),
+    ))
+    assert sm.state is State.SCROLL
+
+
+def test_posture_failing_for_longer_than_exit_debounce_leaves_scroll():
+    sm = StateMachine()
+    t = arm(sm)
+    t_scroll = _enter_scroll(sm, t)
+    sm.update(feat(t_scroll + 0.01, fingers=FULLY_OPEN, ref=(0.5, 0.5)))
+    assert sm.state is State.SCROLL
+    sm.update(feat(
+        t_scroll + 0.01 + config.SCROLL_EXIT_S + 0.05,
+        fingers=FULLY_OPEN, ref=(0.5, 0.5),
+    ))
+    assert sm.state is State.TRACKING
+
+
+def test_neutral_is_not_re_recorded_when_posture_recovers_within_debounce():
+    """The specific defect diagnosed on recordings/scroll_hold.jsonl, pinned
+    directly: a sustained offset that briefly flickers must keep scrolling
+    at the same rate, not reset to (near) zero. If the neutral were
+    re-recorded at the flicker frame's position, holding the SAME offset
+    afterward would read as ~0 relative to the new neutral -- inside
+    SCROLL_NEUTRAL_DEADZONE -- and scrolling would stop. Preserving the
+    original neutral keeps the offset, and therefore the scroll, alive."""
+    sm = StateMachine()
+    t = arm(sm)
+    dt = 1.0 / 30.0
+    t_now = t
+
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.5)))
+    assert sm.state is State.SCROLL
+
+    offset = config.SCROLL_NEUTRAL_DEADZONE * 6
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.5 + offset)))
+    assert sm.state is State.SCROLL
+
+    # Single-frame posture flicker: the hand's real position is unchanged,
+    # only the finger/thumb classification misreads for one frame -- exactly
+    # the landmark noise diagnosed on recordings/scroll_hold.jsonl.
+    t_now += dt
+    sm.update(feat(t_now, fingers=FULLY_OPEN, ref=(0.5, 0.5 + offset)))
+    assert sm.state is State.SCROLL  # not ejected by one flickered frame
+
+    after: list[float] = []
+    for _ in range(10):
+        t_now += dt
+        out = sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.5 + offset)))
+        after += [i.dy for i in out if isinstance(i, Scroll)]
+    assert after  # still scrolling at the held offset -- neutral was preserved
+
+
+def test_re_entering_scroll_after_a_genuine_exit_records_a_fresh_neutral():
+    """A genuine exit (posture absent continuously past SCROLL_EXIT_S), not
+    just a flicker, still records a fresh neutral on re-entry -- the
+    debounce must not suppress that existing, already-tested behaviour (see
+    test_scroll_neutral_is_re_recorded_on_each_entry for the entry-side
+    mechanism this reuses)."""
+    sm = StateMachine()
+    t = arm(sm)
+    dt = 1.0 / 30.0
+    t_now = t
+
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.5)))
+    assert sm.state is State.SCROLL
+
+    # Posture absent continuously, well past SCROLL_EXIT_S -- a genuine exit.
+    exit_frames = math.ceil(config.SCROLL_EXIT_S / dt) + 3
+    for _ in range(exit_frames):
+        t_now += dt
+        sm.update(feat(t_now, fingers=FULLY_OPEN, ref=(0.5, 0.8)))
+    assert sm.state is State.TRACKING
+
+    # Re-enter scroll from the new, settled position.
+    for _ in range(10):
+        t_now += dt
+        sm.update(feat(t_now, fingers=TWO, ref=(0.5, 0.8)))
+    assert sm.state is State.SCROLL
+
+    # Holding exactly at the new entry position -- the new neutral -- must
+    # produce no scroll. A stale neutral of 0.5 would read this as a large
+    # offset, far outside the deadzone, and scroll continuously.
+    per_frame = _hold_offset(sm, t_now, 0.30, frames=10)
+    assert all(scrolls == [] for scrolls in per_frame)
 
 
 def test_scroll_pauses_during_dropout_and_neutral_is_preserved():

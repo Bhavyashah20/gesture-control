@@ -204,6 +204,16 @@ THUMB_TUCK_MAX = 0.70
 # the way to a real middle-pinch) eject the user, same as before.
 THUMB_TUCK_RELEASE = 0.95
 
+# Scroll is reluctant to leave, mirroring the posture gate's arm/disarm
+# asymmetry and for the same reason. Measured on recordings/scroll_hold.jsonl:
+# a correctly performed 15 s gesture broke into 16 fragments, the longest only
+# 1.73 s, because single frames of landmark noise dropped the finger or thumb
+# condition 13 and 16 times respectively. Every fragment re-entered scroll and
+# re-recorded the rate neutral, so the offset never accumulated and the whole
+# gesture produced 47 px. The posture must be absent continuously for this
+# long before scroll actually ends.
+SCROLL_EXIT_S = 0.35
+
 SWIPE_VEL = 0.8
 SWIPE_DIST = 0.20
 SWIPE_HOLD_S = 0.100

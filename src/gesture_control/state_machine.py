@@ -89,6 +89,13 @@ class StateMachine:
         # repositioning never inherits a stale neutral from a previous
         # visit to SCROLL.
         self._scroll_neutral: float | None = None
+        # Scroll-exit debounce (see config.py's SCROLL_EXIT_S comment),
+        # mirroring gate.py's `_lost_since`: set the frame the posture first
+        # fails while in SCROLL, cleared the moment it passes again. SCROLL
+        # is only actually left once this has run continuously for
+        # SCROLL_EXIT_S -- a single frame of landmark noise on the finger or
+        # thumb condition must not eject the user and force a fresh neutral.
+        self._scroll_exit_since: float | None = None
         self._swipe_hist: deque[tuple[float, float]] = deque()
         self._swipe_last: float | None = None
         # Jitter accumulator (see config.py's MOVE_DEADZONE_PX comment):
@@ -111,6 +118,7 @@ class StateMachine:
         self._ref = None
         self._t = None
         self._scroll_neutral = None
+        self._scroll_exit_since = None
         self._reset_move_residual()
 
     def _reset_move_residual(self) -> None:
@@ -291,10 +299,28 @@ class StateMachine:
             self._pinch_closed, pressed, released = self._update_pinch(f, self._pinch_closed)
 
         if self._state is State.SCROLL:
-            if not _can_stay_in_scroll(f):
-                self._state = State.TRACKING
-                self._scroll_neutral = None
-                return intents
+            if _can_stay_in_scroll(f):
+                self._scroll_exit_since = None
+            else:
+                # Reluctant to leave (see config.py's SCROLL_EXIT_S
+                # comment), mirroring gate.py's own arm/disarm asymmetry:
+                # start (or continue) a debounce timer instead of leaving on
+                # the spot. The frame's scroll output below is computed
+                # exactly as it would be with the posture satisfied -- a
+                # single flickered frame must not visibly stutter, the same
+                # way the gate's DISARM_S grace window does not pause cursor
+                # tracking while `_can_sustain` is momentarily false. Only
+                # once the posture has been absent continuously for
+                # SCROLL_EXIT_S does scroll actually end, and only then is
+                # the neutral cleared, so a fragment that recovers in time
+                # never has its offset reset to zero.
+                if self._scroll_exit_since is None:
+                    self._scroll_exit_since = f.t
+                elif f.t - self._scroll_exit_since >= config.SCROLL_EXIT_S:
+                    self._state = State.TRACKING
+                    self._scroll_neutral = None
+                    self._scroll_exit_since = None
+                    return intents
             # Rate-based scroll (see config.py's SCROLL_NEUTRAL_DEADZONE
             # comment): offset is the hand's current vertical position
             # relative to the neutral point recorded on entry, not a
