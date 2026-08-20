@@ -8,7 +8,100 @@ finger); amended 2026-08-20 (rate-based scrolling replaces displacement;
 absent frames must not reach the movement path; scroll exit debounce;
 Space switch requires an exact three-finger posture); amended 2026-08-21
 (posture gate sustain no longer requires palm_facing; Space switching goes
-through AppleScript, not CGEvent)
+through AppleScript, not CGEvent; three-finger swipe usability fixes --
+direction inverted to the macOS convention, SWIPE_DIST halved, pinch
+channels gated out during the swipe posture)
+
+## Amendment (2026-08-21): three-finger swipe usability fixes
+
+Live use of the swipe (once the two amendments below made it fire
+reliably) surfaced three separate usability problems. All three are fixed
+in `state_machine.py` and `config.py`; none touch the gate, the actuator,
+or any other gesture.
+
+**1. Direction was backwards.** The old mapping fired `Space("right")` for
+a rightward hand movement (`disp > 0.0`) -- a literal reading of the
+hand's motion, not the convention users of a trackpad actually expect.
+macOS natural scrolling makes content follow the hand: a three-finger
+trackpad swipe moving right brings the Space to its right *into view from
+the left*, which reads as the desktop moving left under a hand moving
+right. `_detect_swipe` now maps hand-left to `Space("right")` and
+hand-right to `Space("left")` -- inverted from before, with a comment
+at the call site stating the convention explicitly (hand pushes the
+desktop) so it is not "fixed" back by a future reader who only checks the
+literal direction. `tests/test_state_machine.py`'s
+`test_fast_sweep_right_emits_space_right` and
+`test_fast_sweep_left_emits_space_left` pinned the old mapping and were
+replaced by `test_fast_sweep_hand_right_emits_space_left` and
+`test_fast_sweep_hand_left_emits_space_right`, asserting the new one.
+
+**2. The required sweep was impractically long.** `SWIPE_DIST` was 0.20
+frame-widths -- 51% of the user's measured usable hand width during the
+gesture (span 0.39-0.79), meaning the swipe required sweeping from one
+extreme of comfortable reach to the other. Swept against all twelve
+recordings, from 0.20 down to 0.06 in steps: detection on
+`recordings/three_finger.jsonl` holds at exactly 5 swipes, with the same
+direction sequence, at every value in that range, and false positives stay
+at zero across all eleven other recordings throughout the same range.
+Lowered to `SWIPE_DIST = 0.10` -- about 26% of the user's hand range,
+still a wide margin above the false-positive floor the sweep found. No
+test pins a specific `SWIPE_DIST` value (it is a config constant, per the
+purity boundary); the existing `test_fast_sweep_*`/`test_one_sweep_*`
+tests, which sweep a fixed 0.60 frame-widths regardless of this constant,
+continue to hold.
+
+**3. Forming or releasing the posture fired stray presses.** Replaying
+`recordings/three_finger.jsonl` emitted 2 `ButtonDown` and 1 `Click(2)`
+the user never intended, even though only 2 of its 267 three-finger
+frames actually read as pinched (`pinch_ratio < PINCH_CLOSE` or
+`pinch2_ratio < PINCH2_CLOSE`) -- the presses fired on the way into and out
+of the posture, while the hand passed through finger configurations that
+happen to also read as a pinch. A pinch-length debounce (require N
+consecutive closed frames before opening) was tested and ruled out by the
+data: spurious pinch episodes during the swipe run a median of 7
+consecutive frames, *longer* than genuine clicks in
+`recordings/live_clicks.jsonl` at a median of 2, so episode length cannot
+separate a spurious swipe-transition pinch from a real one.
+
+The fix that fits the existing design is the same mutual-exclusion pattern
+already used for curl-vs-pinch (`INDEX_CURL_CLOSE`, see the 2026-08-11
+amendment below) and scroll-vs-double-click (`THUMB_TUCK_MAX`, see the
+2026-08-19 amendments below): the swipe posture gates the pinch channels
+instead of trying to filter the pinch signal itself. `StateMachine` now
+tracks the timestamp the exact three-finger posture (`_swipe_finger_shape`)
+was last seen -- the current frame counts, so "currently held" and
+"recently held" collapse into one check. While within
+`SWIPE_PINCH_LOCKOUT_S` (0.4 s, new in `config.py`) of that timestamp,
+both pinch channels are ignored outright: no new `ButtonDown` or
+`Click(2)` can open. **Safety, non-negotiable, same rule as the curl gate
+(commit `577b189`):** if a pinch was already open when the lockout
+engages, it is released (`ButtonUp`) in that same frame rather than held
+through -- leaving a button down while ignoring the channel that would
+release it is exactly the stuck-button failure mode this project guards
+against everywhere else. A curl-forced release enters `Frozen`; a
+swipe-lockout-forced release returns to plain `Tracking`, since the swipe
+posture carries no freeze semantics of its own.
+
+After this fix, `recordings/three_finger.jsonl` replays to zero
+`ButtonDown`, `ButtonUp`, or `Click` events of any kind, while still
+producing 5 `Space` intents (now with inverted, correct directions).
+Recordings that never hold the exact three-finger posture are
+structurally unaffected by this gate -- confirmed by replaying all twelve
+fixtures, not assumed: `five_clicks.jsonl` (1 stray matching frame) and
+`scroll_hold.jsonl` (2 stray matching frames) both produce identical
+`ButtonDown`/`ButtonUp`/`Click`/`Scroll` counts before and after this
+change, because their stray frames sit far from any pinch attempt.
+`reaching_past.jsonl` and `talking_hands.jsonl` never leave `Disarmed` at
+all and continue to replay to zero intents of any kind.
+
+**Testing:** `tests/test_state_machine.py` adds
+`test_swipe_posture_suppresses_a_pinch_reading`,
+`test_pinch_stays_locked_out_briefly_after_the_swipe_posture_ends`,
+`test_pinch_opens_normally_once_the_lockout_window_has_elapsed` (pins the
+fix against over-suppression), and the safety pair
+`test_swipe_posture_engaging_mid_press_releases_the_button_not_holds_it` /
+`test_swipe_lockout_does_not_reopen_the_button_while_still_locked`,
+mirroring the existing curl-gate tests of the same shape.
 
 ## Amendment (2026-08-21): Space switching goes through AppleScript, not CGEvent
 
@@ -1483,8 +1576,16 @@ extended, pinky down — matching the macOS trackpad three-finger-swipe
 convention; see "Amendment (2026-08-20 second follow-up)" above for why this
 replaced the original open-palm posture): horizontal velocity of
 `cursor_ref` exceeds 0.6 frame-widths/sec sustained for ≥ 100 ms, and net
-horizontal displacement exceeds 0.20 frame widths. Rightward sweep emits
-`Space(right)` → `Ctrl+→`.
+horizontal displacement exceeds `SWIPE_DIST` = 0.10 frame widths (lowered
+from 0.20 — see "Amendment (2026-08-21): three-finger swipe usability
+fixes" below).
+
+Direction follows the macOS natural-scrolling convention, not a literal
+reading of the hand's motion: the hand pushes the desktop, so a **leftward**
+sweep emits `Space(right)` → `Ctrl+→`, and a rightward sweep emits
+`Space(left)` → `Ctrl+←`. This matches the three-finger trackpad swipe with
+natural scrolling, which is the gesture this one is modeled on (see the
+same amendment below for why the original mapping had it backwards).
 
 Swipe reads the **raw** `cursor_ref`, not the filtered value the cursor uses. A sweep
 is a gross, high-amplitude gesture, so smoothing only eats the displacement being
@@ -1492,6 +1593,12 @@ measured; reading raw also decouples swipe sensitivity from cursor-filter tuning
 
 An 800 ms cooldown follows every emission. Without it, a single physical sweep
 produces many frames above threshold and skips three Spaces instead of one.
+
+The three-finger posture is also mutually exclusive with both pinch
+channels: while it is held, or within `SWIPE_PINCH_LOCKOUT_S` (0.4 s) of
+when it was last held, neither pinch channel can open a new press, and an
+already-open pinch is released rather than held through. See "Amendment
+(2026-08-21): three-finger swipe usability fixes" below.
 
 ## Filtering and pointer gain
 

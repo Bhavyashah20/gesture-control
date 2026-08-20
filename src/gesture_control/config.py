@@ -239,7 +239,16 @@ SCROLL_EXIT_S = 0.35
 # represented and zero false positives across all eleven other recordings;
 # 0.7 yields only 4 swipes and their directions read less cleanly.
 SWIPE_VEL = 0.6
-SWIPE_DIST = 0.20
+# Lowered from 0.20 (2026-08-21): 0.20 frame-widths is 51% of the user's
+# entire usable hand width (measured span 0.39-0.79 during the gesture),
+# forcing a sweep from one extreme of their reach to the other. Swept
+# against all twelve recordings from 0.20 down to 0.06: detection on
+# recordings/three_finger.jsonl holds at exactly 5 swipes, with the same
+# direction sequence, across the whole range, and false positives stay at
+# ZERO across all eleven other recordings throughout that range too. 0.10
+# halves the required travel to about 26% of the user's hand range while
+# keeping a wide margin above the false-positive floor found by the sweep.
+SWIPE_DIST = 0.10
 SWIPE_HOLD_S = 0.100
 # Do NOT widen this to "help" slow swipes -- it was tested and makes things
 # WORSE. A longer window starts including the hand's return motion, which
@@ -248,6 +257,15 @@ SWIPE_HOLD_S = 0.100
 # 0.350.
 SWIPE_WINDOW_S = 0.350
 SWIPE_COOLDOWN_S = 0.800
+
+# A hand forming or releasing the three-finger swipe posture passes through
+# configurations that read as a pinch, firing presses the user never meant.
+# Measured on recordings/three_finger.jsonl: only 2 of 267 three-finger
+# frames read as pinched, yet replay emitted 2 ButtonDown and 1 Click(2) --
+# they fire on the way in and out. A pinch-length debounce cannot separate
+# these (spurious episodes median 7 frames, genuine clicks median 2), so the
+# posture itself gates the pinch instead.
+SWIPE_PINCH_LOCKOUT_S = 0.4
 
 # Added 2026-08-11: the user cannot hold the cursor still enough to land on
 # small targets like window close buttons. A plain deadzone that discards

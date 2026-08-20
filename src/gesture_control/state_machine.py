@@ -92,6 +92,17 @@ class StateMachine:
     ignored outright, and if a pinch was already open when the curl
     engages, it is released (ButtonUp) in that same frame rather than held
     through the freeze. See config.py's INDEX_CURL_CLOSE comment.
+
+    The three-finger swipe posture and the pinch channels are mutually
+    exclusive the same way (2026-08-21 fix): a hand forming or releasing
+    the swipe posture passes through configurations that read as a pinch,
+    firing spurious presses partway through the gesture. While the posture
+    is held, or within SWIPE_PINCH_LOCKOUT_S of when it was last held, both
+    pinch channels are ignored, and an already-open pinch is released
+    (ButtonUp) rather than held through -- same safety rule as the curl
+    gate, same reason: never leave a button down while ignoring the
+    channel that would release it. See config.py's SWIPE_PINCH_LOCKOUT_S
+    comment.
     """
 
     def __init__(self) -> None:
@@ -119,6 +130,13 @@ class StateMachine:
         self._scroll_exit_since: float | None = None
         self._swipe_hist: deque[tuple[float, float]] = deque()
         self._swipe_last: float | None = None
+        # Timestamp the three-finger swipe posture was last seen (including
+        # this frame, if held now). Not reset on disarm, mirroring
+        # _swipe_last/_swipe_hist above -- it is a timing record, not a
+        # current-hold flag, so a stale value only ever makes the pinch
+        # gate below more cautious, never less. See config.py's
+        # SWIPE_PINCH_LOCKOUT_S comment.
+        self._swipe_posture_last: float | None = None
         # Jitter accumulator (see config.py's MOVE_DEADZONE_PX comment):
         # sub-threshold per-frame pixel deltas accumulate here instead of
         # being emitted or discarded outright.
@@ -248,7 +266,13 @@ class StateMachine:
 
         self._swipe_last = f.t
         self._swipe_hist.clear()
-        return [Space("right" if disp > 0.0 else "left")]
+        # macOS natural-scrolling convention: the hand pushes the desktop,
+        # so hand-left means desktop-right (and vice versa) -- content
+        # follows the hand, exactly like a three-finger trackpad swipe with
+        # natural scrolling enabled. Do NOT "fix" this back to hand-right
+        # means Space-right; that reads backwards to anyone used to the
+        # trackpad gesture, which is the whole point of matching it.
+        return [Space("left" if disp > 0.0 else "right")]
 
     def update(self, f: Features) -> list[Intent]:
         intents: list[Intent] = []
@@ -309,7 +333,23 @@ class StateMachine:
         # press. If a real pinch was already open when the curl engages,
         # release it now rather than trust the spurious reading to hold it.
         self._curled = self._update_curl(f, self._curled)
-        if self._curled:
+
+        # Mutual exclusion between the three-finger swipe posture and the
+        # pinch channels, mirroring the curl-vs-pinch and scroll-vs-double-
+        # click gates above: a hand forming or releasing the swipe posture
+        # passes through configurations that read as a pinch (see
+        # config.py's SWIPE_PINCH_LOCKOUT_S comment). Track the last time
+        # the exact posture was seen -- this frame counts, so "currently
+        # held" and "recently held" are the same check -- and gate new
+        # pinch closes while within the lockout window.
+        if _swipe_finger_shape(f):
+            self._swipe_posture_last = f.t
+        swipe_locked = (
+            self._swipe_posture_last is not None
+            and f.t - self._swipe_posture_last < config.SWIPE_PINCH_LOCKOUT_S
+        )
+
+        if self._curled or swipe_locked:
             pressed = False
             if self._state is State.PRESSED and self._pinch_closed:
                 self._pinch_closed = False

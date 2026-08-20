@@ -1061,18 +1061,29 @@ def _sweep(sm, t, x_from, x_to, steps=8, span=0.20, fingers=THREE):
     return out
 
 
-def test_fast_sweep_right_emits_space_right():
+def test_fast_sweep_hand_right_emits_space_left():
+    """2026-08-21: replaces test_fast_sweep_right_emits_space_right and
+    test_fast_sweep_left_emits_space_left, which pinned the OLD (and, per
+    live use, backwards-feeling) mapping of hand-right -> Space right.
+
+    The convention is now the macOS natural-scrolling one: the hand pushes
+    the desktop, so a rightward hand sweep switches to the Space on the
+    LEFT -- content follows the hand, exactly like a three-finger trackpad
+    swipe with natural scrolling. See state_machine.py's _detect_swipe."""
     sm = StateMachine()
     t = arm(sm)
     out = _sweep(sm, t, 0.20, 0.80)
-    assert Space("right") in out
+    assert Space("left") in out
 
 
-def test_fast_sweep_left_emits_space_left():
+def test_fast_sweep_hand_left_emits_space_right():
+    """Mirror of test_fast_sweep_hand_right_emits_space_left: a leftward
+    hand sweep switches to the Space on the RIGHT, under the same
+    hand-pushes-the-desktop convention."""
     sm = StateMachine()
     t = arm(sm)
     out = _sweep(sm, t, 0.80, 0.20)
-    assert Space("left") in out
+    assert Space("right") in out
 
 
 def test_one_sweep_emits_exactly_one_space():
@@ -1113,6 +1124,89 @@ def test_open_palm_sweep_does_not_emit_space():
     t = arm(sm)
     out = _sweep(sm, t, 0.20, 0.80, fingers=FULLY_OPEN)
     assert not any(isinstance(i, Space) for i in out)
+
+
+# --- SWIPE_PINCH_LOCKOUT_S: swipe posture gates the pinch channels ---
+#
+# A hand forming or releasing the three-finger swipe posture passes through
+# configurations that read as a pinch (see config.py's SWIPE_PINCH_LOCKOUT_S
+# comment). Mirrors the curl-vs-pinch mutual exclusion above, including its
+# non-negotiable safety property: an already-open pinch must be released,
+# never held through.
+
+
+def test_swipe_posture_suppresses_a_pinch_reading():
+    """While the swipe posture is held, a pinch reading must not open
+    PRESSED or fire Click(2)."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = sm.update(feat(t, fingers=THREE, pinch=0.2))
+    assert out == []
+    assert sm.state is State.TRACKING
+
+
+def test_pinch_stays_locked_out_briefly_after_the_swipe_posture_ends():
+    """The lockout extends past the exact frame the posture was held, for
+    SWIPE_PINCH_LOCKOUT_S -- exactly the window covering a hand releasing
+    the shape, which is when the transition is most likely to misread as a
+    pinch."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=THREE))
+    out = sm.update(feat(
+        t + config.SWIPE_PINCH_LOCKOUT_S / 2,
+        fingers=(True, True, True, True), pinch=0.2,
+    ))
+    assert out == []
+    assert sm.state is State.TRACKING
+
+
+def test_pinch_opens_normally_once_the_lockout_window_has_elapsed():
+    """Pins the fix against over-suppression: once SWIPE_PINCH_LOCKOUT_S has
+    fully elapsed since the swipe posture was last seen, an ordinary pinch
+    must open PRESSED exactly as it would with no swipe involved at all."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, fingers=THREE))
+    out = sm.update(feat(
+        t + config.SWIPE_PINCH_LOCKOUT_S + 0.05,
+        fingers=(True, True, True, True), pinch=0.2,
+    ))
+    assert out == [ButtonDown()]
+    assert sm.state is State.PRESSED
+
+
+def test_swipe_posture_engaging_mid_press_releases_the_button_not_holds_it():
+    """Safety property, non-negotiable -- same rule as the curl gate
+    (commit 577b189): if a pinch is already open when the swipe-posture
+    lockout engages, release it (ButtonUp) rather than hold it through.
+    Leaving a button down while ignoring the channel that would release it
+    is the stuck-button failure this project guards against everywhere
+    else."""
+    sm = StateMachine()
+    t = arm(sm)
+    down = sm.update(feat(t, pinch=0.2))
+    assert down == [ButtonDown()]
+    assert sm.state is State.PRESSED
+    out = sm.update(feat(t + 0.05, fingers=THREE, pinch=0.2))
+    assert out == [ButtonUp()]
+    assert sm.state is State.TRACKING
+
+
+def test_swipe_lockout_does_not_reopen_the_button_while_still_locked():
+    """Sustained guarantee, mirroring
+    test_curling_ignores_a_spurious_pinch_reading_while_already_frozen: once
+    released by the swipe lockout, a continuing spurious pinch reading must
+    not reopen the button on a later frame still inside the lockout
+    window."""
+    sm = StateMachine()
+    t = arm(sm)
+    sm.update(feat(t, pinch=0.2))
+    sm.update(feat(t + 0.05, fingers=THREE, pinch=0.2))
+    assert sm.state is State.TRACKING
+    out = sm.update(feat(t + 0.10, fingers=(True, True, True, True), pinch=0.2))
+    assert out == []
+    assert sm.state is State.TRACKING
 
 
 # --- MOVE_DEADZONE_PX: jitter accumulator ---

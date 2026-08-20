@@ -20,7 +20,7 @@ like picking up a file and moving your hand.
 | Release the pinch | Release the mouse button |
 | Pinch (middle finger) | Double-click |
 | Index and middle extended, ring curled, thumb tucked to the palm, then hold your hand above or below where you started the gesture | Scroll |
-| Index, middle and ring extended, pinky curled, swept sideways | Previous or next fullscreen Space |
+| Index, middle and ring extended, pinky curled, swept sideways | Previous or next fullscreen Space -- macOS natural-scrolling convention: sweep your hand LEFT to switch to the Space on the RIGHT, and vice versa (content follows your hand, exactly like a three-finger trackpad swipe with natural scrolling) |
 | `Esc` | Stop immediately |
 
 The cursor follows your hand continuously while armed — no pinch required to
@@ -515,8 +515,10 @@ above gets a chance to run.
   `palm_facing` from the gate's sustain condition — see "Turning your palm
   away does not stop the system" above and the `Gate` docstring in
   `gate.py`. `recordings/three_finger.jsonl` now replays to 5 genuine
-  `Space` switches, 3 right and 2 left (up from 2, both left) — see
-  `tests/test_replay.py`'s `test_three_finger_recording_yields_multiple_spaces`
+  `Space` switches (up from 2, both one direction) — see
+  `tests/test_replay.py`'s `test_three_finger_recording_yields_multiple_spaces`.
+  Direction labels below reflect the hand-pushes-the-desktop convention
+  fixed the same day — see the swipe-usability bullet below
 - **Space switching goes through AppleScript, not CGEvent (2026-08-21).**
   Every other intent in this app posts a synthetic CGEvent to
   `kCGHIDEventTap`, and that mechanism reliably worked end-to-end — except
@@ -541,3 +543,40 @@ above gets a chance to run.
   `SWIPE_COOLDOWN_S` = 800 ms) and never raises: a failed or slow Space
   switch prints an actionable message to stderr instead of taking down the
   pipeline mid-gesture.
+- **Three-finger swipe usability fixes (2026-08-21).** Live use surfaced
+  three problems with the swipe once it was firing reliably:
+  - *Direction was backwards.* The old mapping fired `Space("right")` for a
+    rightward hand movement — the opposite of the macOS convention, where
+    content follows the hand (a three-finger trackpad swipe with natural
+    scrolling). `state_machine.py`'s `_detect_swipe` now maps hand-left to
+    `Space("right")` and hand-right to `Space("left")`; see the "Gestures"
+    table above.
+  - *The required sweep was impractically long.* `SWIPE_DIST` was 0.20
+    frame-widths — 51% of the user's measured usable hand width (0.39-0.79),
+    forcing a sweep from one extreme of their reach to the other. Swept
+    against all twelve recordings from 0.20 down to 0.06:
+    `recordings/three_finger.jsonl` holds at exactly 5 swipes with the same
+    direction sequence across the whole range, and false positives stay at
+    zero across all eleven other recordings throughout that range too.
+    Lowered to `SWIPE_DIST = 0.10` — about 26% of the user's hand range,
+    still a wide margin above the false-positive floor found by the sweep.
+  - *Forming or releasing the posture fired stray presses.* Replaying
+    `recordings/three_finger.jsonl` emitted 2 `ButtonDown` and 1 `Click(2)`
+    the user never intended, even though only 2 of its 267 three-finger
+    frames actually read as pinched — the presses fired while the hand was
+    forming or releasing the three-finger shape, passing through
+    configurations that read as a pinch. A pinch-length debounce was tested
+    and ruled out: spurious pinch episodes during the swipe run a median of
+    7 consecutive frames, longer than genuine clicks in
+    `recordings/live_clicks.jsonl` at a median of 2, so episode length
+    cannot separate them. Fixed the same way as the existing curl-vs-pinch
+    and scroll-vs-double-click mutual exclusions: while the three-finger
+    posture is held, or within `SWIPE_PINCH_LOCKOUT_S` (0.4 s) of when it
+    was last held, both pinch channels are ignored, and an already-open
+    pinch is released (`ButtonUp`) rather than held through, the same
+    stuck-button safety rule as the curl gate (commit `577b189`). After
+    this fix, `recordings/three_finger.jsonl` replays to zero `ButtonDown`,
+    `ButtonUp`, or `Click` events of any kind while still producing 5
+    `Space` switches. Recordings that never hold the three-finger posture
+    are structurally unaffected by this gate; confirmed by replaying all
+    twelve fixtures, not assumed.
