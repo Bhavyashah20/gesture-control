@@ -1046,12 +1046,18 @@ def test_scroll_pauses_during_dropout_and_neutral_is_preserved():
     assert total_scroll < 500.0
 
 
-def _sweep(sm, t, x_from, x_to, steps=8, span=0.20):
-    """Drive a smooth horizontal sweep. Returns all intents emitted."""
+THREE = (True, True, True, False)
+
+
+def _sweep(sm, t, x_from, x_to, steps=8, span=0.20, fingers=THREE):
+    """Drive a smooth horizontal sweep. Returns all intents emitted.
+
+    Defaults to the three-finger swipe posture (index, middle, ring
+    extended, pinky down) -- the exact shape Space switching now requires."""
     out = []
     for i in range(steps + 1):
         x = x_from + (x_to - x_from) * i / steps
-        out += sm.update(feat(t + span * i / steps, ref=(x, 0.5)))
+        out += sm.update(feat(t + span * i / steps, ref=(x, 0.5), fingers=fingers))
     return out
 
 
@@ -1077,6 +1083,7 @@ def test_one_sweep_emits_exactly_one_space():
 
 
 def test_slow_drift_does_not_emit_space():
+    """A three-finger posture moving too slowly must not switch Spaces."""
     sm = StateMachine()
     t = arm(sm)
     out = _sweep(sm, t, 0.20, 0.80, steps=40, span=4.0)
@@ -1091,6 +1098,20 @@ def test_sweep_while_pressed_does_not_emit_space():
     out = []
     for i in range(9):
         out += sm.update(feat(t + 0.02 * i, pinch=0.2, ref=(0.2 + 0.075 * i, 0.5)))
+    assert not any(isinstance(i, Space) for i in out)
+
+
+def test_open_palm_sweep_does_not_emit_space():
+    """2026-08-20: Space switching used to fire on ANY posture with three or
+    more fingers up (sum(fingers_up) >= ARM_FINGERS_MIN), which an open palm
+    -- the resting hand shape -- also satisfies, making ordinary armed hand
+    movement a false-positive source. It now requires the exact three-finger
+    posture (index, middle, ring extended, pinky down), matching the macOS
+    trackpad convention. An open palm performing the identical fast sweep
+    must therefore emit nothing."""
+    sm = StateMachine()
+    t = arm(sm)
+    out = _sweep(sm, t, 0.20, 0.80, fingers=FULLY_OPEN)
     assert not any(isinstance(i, Space) for i in out)
 
 

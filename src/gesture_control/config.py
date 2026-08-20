@@ -224,9 +224,28 @@ THUMB_TUCK_RELEASE = 0.95
 # long before scroll actually ends.
 SCROLL_EXIT_S = 0.35
 
-SWIPE_VEL = 0.8
+# Space switching (2026-08-20 redesign): the posture gate changed from
+# "three or more fingers up" (which an open palm, the resting hand shape,
+# also satisfies) to the exact three-finger posture -- index, middle, ring
+# extended, pinky down -- matching the macOS trackpad three-finger-swipe
+# convention. See state_machine.py's _swipe_finger_shape.
+#
+# SWIPE_VEL lowered from 0.8 to 0.6 after measuring the user's real
+# three-finger swipes in recordings/three_finger.jsonl: displacement
+# comfortably clears SWIPE_DIST (0.268 frame-widths over ~0.34 s), but
+# velocity peaks at only 0.79 frame-widths/sec -- one hundredth under the
+# old 0.8 threshold, so every single swipe in the recording missed it and
+# none fired. At 0.6 the recording yields 5 swipes with both directions
+# represented and zero false positives across all eleven other recordings;
+# 0.7 yields only 4 swipes and their directions read less cleanly.
+SWIPE_VEL = 0.6
 SWIPE_DIST = 0.20
 SWIPE_HOLD_S = 0.100
+# Do NOT widen this to "help" slow swipes -- it was tested and makes things
+# WORSE. A longer window starts including the hand's return motion, which
+# cancels the net displacement measured against SWIPE_DIST and drops
+# recordings/three_finger.jsonl's detection from 5 swipes to 2. Leave at
+# 0.350.
 SWIPE_WINDOW_S = 0.350
 SWIPE_COOLDOWN_S = 0.800
 

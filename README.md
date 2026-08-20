@@ -20,7 +20,7 @@ like picking up a file and moving your hand.
 | Release the pinch | Release the mouse button |
 | Pinch (middle finger) | Double-click |
 | Index and middle extended, ring curled, thumb tucked to the palm, then hold your hand above or below where you started the gesture | Scroll |
-| Open palm, sweep sideways | Previous or next fullscreen Space |
+| Index, middle and ring extended, pinky curled, swept sideways | Previous or next fullscreen Space |
 | `Esc` | Stop immediately |
 
 The cursor follows your hand continuously while armed — no pinch required to
@@ -467,3 +467,15 @@ above gets a chance to run.
   original curl-gate watches. The previously-reported stuck button from this
   same recording (an unreleased `ButtonDown` at t=14.208s) was fixed earlier
   by the mutual-exclusivity change and remains fixed
+- Space switching (2026-08-20) requires the exact three-finger posture and
+  fires reliably for leftward swipes, but a rightward three-finger swipe
+  rotates the hand edge-on to the camera for roughly 0.3-0.4 s, which is
+  long enough to trip `palm_facing` false and, via `DISARM_S`, drop the
+  system out of the armed state mid-swipe. `recordings/three_finger.jsonl`
+  replays to 2 genuine `Space("left")` switches; the rightward swipes in
+  that recording are lost to this Gate interaction, not to the swipe
+  detector itself (see `tests/test_replay.py`'s
+  `test_three_finger_recording_yields_multiple_spaces`). Fixing this would
+  mean retuning the arm/disarm gate or `palm_facing` against new
+  recordings, which is out of scope for the finger-posture and
+  `SWIPE_VEL` change made here

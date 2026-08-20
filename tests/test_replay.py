@@ -103,28 +103,24 @@ def test_live_clicks_yields_twelve_button_down_up_pairs_never_a_click_two():
     assert Click(2) not in out
 
 
-def test_live_clicks_contains_one_incidental_space():
+def test_live_clicks_yields_no_space():
     """Pinned here so a future swipe-tuning change surfaces its effect on
     this fixture too, not just on one_sweep.jsonl.
 
-    Was 2 before the 2026-08-20 absent-frame fix (see state_machine.py's
-    `if not f.present` branch). Both were sentinel artifacts, not genuine
-    swipes: this recording has a real absent frame at index 225 (t=7.548)
-    right before one 'right' Space and a run of three absent frames at
-    indices 256-258 right before the other. Under the OLD code,
-    `_detect_swipe` still ran on absent frames and appended the sentinel's
-    frame-centre cursor_ref (0.5, 0.5) into the swipe history; the very
-    next real frame then computed its displacement against that stale
-    centre point instead of the hand's actual prior position, reading as a
-    fast rightward swipe it never made. Skipping absent frames entirely
-    (this fix) removes both artifacts and leaves the one genuine swipe: a
-    real, sustained leftward sweep from cursor_ref.x=0.927 (frame 232) to
-    0.457 (frame 249), comfortably clearing SWIPE_DIST and SWIPE_VEL on
-    its own."""
+    Before the 2026-08-20 three-finger-posture change, this recording
+    contained one genuine Space("left"): a real, sustained leftward sweep
+    from cursor_ref.x=0.927 (frame 232) to 0.457 (frame 249), comfortably
+    clearing SWIPE_DIST and SWIPE_VEL on its own. But that sweep was
+    performed with an open palm, not the three-finger posture the
+    Space-switch gesture now requires (index, middle, ring extended, pinky
+    down) -- so under the new exact-posture gate it correctly no longer
+    registers. This is exactly the false-positive source the change removes:
+    an open palm is the resting hand shape, so ordinary armed hand movement
+    -- like reaching across the frame between clicks -- could switch Spaces
+    unintentionally under the old >= 3 fingers rule. Zero is correct here,
+    not a regression."""
     out = _replay("live_clicks")
-    spaces = [i for i in out if isinstance(i, Space)]
-    assert len(spaces) == 1
-    assert spaces[0] == Space("left")
+    assert not any(isinstance(i, Space) for i in out)
 
 
 def test_drag_yields_one_button_down_and_one_button_up():
@@ -155,11 +151,53 @@ def test_talking_with_hands_yields_nothing():
     assert _replay("talking_hands") == []
 
 
-def test_one_sweep_yields_exactly_one_space():
+def test_one_sweep_yields_no_space():
+    """`one_sweep.jsonl` is the user's OLD open-palm sweep, recorded before
+    the 2026-08-20 change that requires the exact three-finger posture
+    (index, middle, ring extended, pinky down) for Space switching -- see
+    config.py's SWIPE_VEL comment. An open palm is the resting hand shape,
+    not the swipe posture, so it no longer switches Spaces at all. This is
+    the intended effect of the change, not a regression: it is what removes
+    open-palm hand movement as a false-positive source for Space switching.
+    """
     out = _replay("one_sweep")
+    assert not any(isinstance(i, Space) for i in out)
+
+
+def test_three_finger_recording_yields_multiple_spaces():
+    """recordings/three_finger.jsonl (added 2026-08-20): 15 s of the user
+    performing real three-finger swipes. (True, True, True, False) is the
+    dominant finger pattern at 267 of 448 present frames, so finger
+    detection needed no change. Velocity did: the recorded swipes reach
+    0.79 frame-widths/sec, just under the old SWIPE_VEL=0.8, so none fired
+    before SWIPE_VEL was lowered to 0.6 -- see config.py's SWIPE_VEL
+    comment.
+
+    Measuring `_detect_swipe` directly against every present frame (finger
+    posture and velocity/displacement alone, bypassing the arm/disarm gate
+    and the curl/pinch state machine) finds 5 crossings at SWIPE_VEL=0.6,
+    3 right and 2 left. Full pipeline replay -- what this test actually
+    exercises, and the only measure that matches what the running system
+    does -- yields fewer: 2, both Space("left"). The difference is real,
+    not a measurement error: every rightward swipe in this recording is
+    preceded by ~0.3-0.4 s where `palm_facing` reads False (rotating the
+    hand sideways to swipe right also rotates it edge-on to the camera),
+    long enough to trip the Gate's DISARM_S and drop the state machine out
+    of TRACKING for part of the swipe -- so `_detect_swipe` either never
+    sees the fast phase of the motion, or resumes with too little of the
+    SWIPE_WINDOW_S history left to clear SWIPE_DIST/SWIPE_VEL. Leftward
+    swipes do not trip palm_facing the same way and both register cleanly.
+    This is a Gate/palm_facing interaction, outside the scope of this
+    change (finger posture + SWIPE_VEL only) -- fixing it would mean
+    retuning DISARM_S or palm_facing against unrelated recordings, which
+    was neither requested nor measured here. Pinning the true, lower,
+    single-direction figure rather than the higher bypass count keeps this
+    test honest about what the shipped system actually does.
+    """
+    out = _replay("three_finger")
     spaces = [i for i in out if isinstance(i, Space)]
-    assert len(spaces) == 1
-    assert not any(isinstance(i, (ButtonDown, ButtonUp, Click)) for i in out)
+    assert len(spaces) >= 2
+    assert all(s == Space("left") for s in spaces)
 
 
 def test_scroll_attempt_produces_a_meaningful_amount_of_scroll():

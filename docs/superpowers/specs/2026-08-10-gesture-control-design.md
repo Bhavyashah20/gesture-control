@@ -5,7 +5,116 @@ Status: Approved and implemented; amended 2026-08-11 (direct-manipulation
 redesign; stability fixes); amended 2026-08-19 (scroll acceleration; scroll
 thumb gate; scroll thumb gate made asymmetric; pinch requires an extended
 finger); amended 2026-08-20 (rate-based scrolling replaces displacement;
-absent frames must not reach the movement path; scroll exit debounce)
+absent frames must not reach the movement path; scroll exit debounce;
+Space switch requires an exact three-finger posture)
+
+## Amendment (2026-08-20 second follow-up): Space switch requires an exact three-finger posture
+
+**Space switching fired on any posture with three or more fingers up, not
+specifically a three-finger swipe.** `_detect_swipe`'s finger gate was
+`sum(f.fingers_up) >= config.ARM_FINGERS_MIN` — the same "three or more"
+threshold the posture gate uses to arm the whole system. An open palm (four
+fingers up) satisfies that easily, and open palm is the *resting* hand
+shape while armed, so ordinary armed hand movement — reaching across the
+frame, repositioning between clicks — could cross `SWIPE_DIST`/`SWIPE_VEL`
+and switch Spaces without the user making anything resembling a deliberate
+swipe gesture. The user asked for a three-finger swipe specifically,
+matching the macOS trackpad convention, which also closes this
+false-positive source.
+
+**Finger detection needed no change.** An earlier assumption held that
+detecting the three-finger posture reliably would require new work on the
+finger-extension logic. The user's recording,
+`recordings/three_finger.jsonl` (15 s of deliberate three-finger swipes),
+disproved that: `(True, True, True, False)` — index, middle, ring extended,
+pinky down — is already the dominant pattern at 267 of 448 present frames,
+using the existing `fingers_up` extraction unmodified. The fix is purely a
+gate change:
+
+```python
+def _swipe_finger_shape(f: Features) -> bool:
+    return f.fingers_up == (True, True, True, False)
+```
+
+replacing the `sum(...) >= ARM_FINGERS_MIN` check in `_detect_swipe`, and
+distinguishable from the scroll posture (`_scroll_finger_shape`) by the
+ring finger: scroll needs it down, swipe needs it up. Simulated against
+every existing fixture, the old `>= 3` rule produced spurious swipes in
+`one_sweep`, `live_clicks`, `middle_pinch` and `reaching_past`; the exact
+posture produces none in any of them.
+
+**`SWIPE_VEL` needed retuning — by one hundredth.** With the posture fixed,
+the user's real three-finger swipes still didn't fire. Measured from the
+recording: displacement comfortably clears `SWIPE_DIST` (0.268 frame-widths
+over roughly 0.34 s), but peak velocity is 0.79 frame-widths/sec against
+`SWIPE_VEL = 0.8` — every swipe in the recording missed the threshold by a
+hundredth of a frame-width per second. Lowered to:
+
+```python
+SWIPE_VEL = 0.6
+```
+
+0.7 was tried first and only recovered 4 of the recording's swipes, with
+less clean direction separation; 0.6 recovers all 5 raw crossings (measured
+by evaluating `_detect_swipe`'s posture/displacement/velocity condition
+directly against every present frame, independent of the arm/disarm gate)
+and introduces zero false positives across the other eleven recordings.
+
+**`SWIPE_WINDOW_S` was tested wider and made things worse — left alone.**
+Widening the 0.35 s window to capture more of a slow swipe seems like an
+obvious companion move, but was tested and rejected: a longer window starts
+including the hand's *return* motion after the swipe, which cancels net
+displacement against `SWIPE_DIST` and drops `three_finger.jsonl`'s raw
+detection count from 5 to 2. `SWIPE_WINDOW_S` stays at 0.350 — do not widen
+it on the assumption that it will help.
+
+**Full-pipeline replay tells a different story than the raw crossing
+count, and that gap is real, not a bug.** The 5 raw crossings above (3
+right, 2 left) are measured by calling `_detect_swipe` directly against
+every present frame — finger posture and displacement/velocity alone,
+bypassing the arm/disarm `Gate` and the curl/pinch state machine entirely.
+That is not how the shipped system, or any other fixture test in this
+codebase, is verified: every other regression test in `test_replay.py`
+replays fixtures through a fresh `StateMachine` via `replay()`, gate and
+all. Doing the same for `three_finger.jsonl` yields only 2 `Space`
+intents, both `Space("left")` — the 3 rightward crossings are lost.
+
+The mechanism: every rightward swipe in this recording is preceded by
+roughly 0.3-0.4 s where `palm_facing` reads `False` — rotating the hand
+sideways to swipe right also rotates it edge-on to the camera, at least for
+this user's swipe technique. That is long enough to trip the Gate's
+`DISARM_S` (0.5 s sustain-loss window) and drop the state machine out of
+`Tracking` for part of the swipe, so `_detect_swipe` either never sees the
+fast phase of the motion or resumes with too little of the `SWIPE_WINDOW_S`
+history left to clear `SWIPE_DIST`/`SWIPE_VEL`. Leftward swipes in this
+recording never trip `palm_facing` the same way, and both register
+cleanly.
+
+This is a genuine measurement, not a defect introduced by this change —
+`Gate`, `DISARM_S`, and `palm_facing` are untouched by it, so the
+interaction predates this work and would show up under the old finger gate
+too, just masked by the fact that the old gate never fired on this
+recording at all (three-or-more-fingers plus the old `SWIPE_VEL = 0.8`
+rejected every crossing regardless). Fixing it is out of scope here: it was
+neither requested nor measured against unrelated recordings, and would mean
+retuning the arm/disarm gate or `palm_facing`, both shared by every other
+gesture. The regression test for this change,
+`test_three_finger_recording_yields_multiple_spaces` in
+`tests/test_replay.py`, pins the true, lower, single-direction figure (`>=
+2`, all `Space("left")`) rather than the higher bypass count, so it stays
+honest about what the shipped system actually does — see that test's
+docstring for the full measurement.
+
+**Verified against every other fixture.** `reaching_past.jsonl` and
+`talking_hands.jsonl` still replay to zero intents of any kind
+(non-negotiable, unchanged). `one_sweep.jsonl` — the user's old open-palm
+sweep, recorded before this change — now replays to zero `Space` intents;
+this is the change working as intended, not a regression, since an open
+palm is no longer the swipe posture. `live_clicks.jsonl` previously
+contained one genuine `Space("left")` performed with an open palm; under
+the exact posture gate it no longer registers, for the same reason.
+`recordings/three_finger.jsonl` is committed as a fixture and is now the
+regression test for the three-finger posture and `SWIPE_VEL` retuning.
 
 ## Amendment (2026-08-20 follow-up): scroll exit debounce
 
@@ -180,10 +289,15 @@ called from the `Tracking` fall-through) removes this too.
 `recordings/live_clicks.jsonl` demonstrates it directly: replayed before
 this fix it produced two incidental `Space("right")` events, both
 immediately following an absent frame (`t≈7.548` and `t≈8.58`-`8.647`);
-replayed after, it produces exactly one `Space("left")`, corresponding to
+replayed after, it produced exactly one `Space("left")`, corresponding to
 the recording's one genuine sustained leftward sweep
-(`cursor_ref.x` 0.927 → 0.457 between frames 232 and 249). See
-`tests/test_replay.py::test_live_clicks_contains_one_incidental_space`.
+(`cursor_ref.x` 0.927 → 0.457 between frames 232 and 249) — performed with
+an open palm. The 2026-08-20 second follow-up (see "Amendment (2026-08-20
+second follow-up)" above) then replaced the open-palm swipe posture with an
+exact three-finger posture, so that one remaining genuine-but-open-palm
+sweep no longer registers either: `live_clicks.jsonl` now replays to zero
+`Space` events. See
+`tests/test_replay.py::test_live_clicks_yields_no_space`.
 
 Verified against every fixture in `recordings/`:
 `reaching_past.jsonl` (9 of 300 frames present — heavily absent-dominated,
@@ -1173,9 +1287,13 @@ is a committed fixture and the regression test for scroll magnitude (see
 Evaluated only in `Tracking`, so a fast drag (`Pressed`) can never be read as
 a swipe.
 
-Fires when, with the open-palm posture held: horizontal velocity of `cursor_ref`
-exceeds 0.8 frame-widths/sec sustained for ≥ 100 ms, and net horizontal displacement
-exceeds 0.20 frame widths. Rightward sweep emits `Space(right)` → `Ctrl+→`.
+Fires when, with the exact three-finger posture held (index, middle and ring
+extended, pinky down — matching the macOS trackpad three-finger-swipe
+convention; see "Amendment (2026-08-20 second follow-up)" above for why this
+replaced the original open-palm posture): horizontal velocity of
+`cursor_ref` exceeds 0.6 frame-widths/sec sustained for ≥ 100 ms, and net
+horizontal displacement exceeds 0.20 frame widths. Rightward sweep emits
+`Space(right)` → `Ctrl+→`.
 
 Swipe reads the **raw** `cursor_ref`, not the filtered value the cursor uses. A sweep
 is a gross, high-amplitude gesture, so smoothing only eats the displacement being
@@ -1338,7 +1456,15 @@ what they demonstrate but not their purpose:
 - a hand reaching past the camera for a coffee cup → zero intents,
   **non-negotiable** (see below)
 - talking with hands in frame for 30 s → zero intents, **non-negotiable**
-- `one_sweep.jsonl` → exactly one `Space`
+- `one_sweep.jsonl` → zero `Space` events as of the 2026-08-20 second
+  follow-up (see "Amendment (2026-08-20 second follow-up)" above): this
+  recording is the user's OLD open-palm sweep, and Space switching now
+  requires the exact three-finger posture, which an open palm no longer
+  satisfies. This is the change working as intended, not a regression.
+  `recordings/three_finger.jsonl` (added 2026-08-20) is the current
+  fixture for a genuine three-finger swipe, and replays to multiple
+  `Space` events (see the amendment for the exact count and why full
+  pipeline replay differs from a raw posture/velocity scan)
 - `middle_pinch.jsonl` (8 deliberate middle-pinches) → `Click(2)`s, proving the
   closer-finger disambiguation fires from real motion rather than only in
   synthetic unit tests
@@ -1441,7 +1567,8 @@ filter) are unchanged by this redesign.
 | `THUMB_TUCK_RELEASE` | 0.95 | scroll exit uses this instead of `THUMB_TUCK_MAX` (added 2026-08-19 follow-up) — see "Amendment (2026-08-19): scroll thumb gate made asymmetric" above. Must stay above `THUMB_TUCK_MAX` (asserted by `test_thumb_tuck_thresholds_have_hysteresis_gap`). Absorbs a momentary thumb un-tuck mid-scroll that would otherwise drop into `Tracking` and let a stray pinch reading fire an unintended click; a genuine untuck past 0.95 still exits. Does not, on its own, remove every spurious click observed on `recordings/scroll_attempt.jsonl` — some come from a different mechanism (`Scroll` failing to *enter* during a curl/pinch sequence where the thumb never drops below `THUMB_TUCK_MAX`), which this constant cannot address |
 | `SCROLL_EXIT_S` | 0.35 | how long the whole scroll posture must be absent continuously before `Scroll` is actually left (added 2026-08-20 follow-up) — see "Amendment (2026-08-20 follow-up): scroll exit debounce" above. Diagnosed on `recordings/scroll_hold.jsonl`: single-frame landmark noise broke a 15 s correctly-performed hold into 16 fragments (longest 1.73 s), each re-entering `Scroll` and re-recording the neutral, for a total of 47 px instead of a real scroll. At 0.35 s that recording replays to ~820 px (36 events) instead |
 | `MOVE_DEADZONE_PX` | 2.0 | jitter deadzone for `Move` (added 2026-08-11) — see "The jitter deadzone" above. Sub-threshold pixel deltas accumulate in a residual instead of being emitted or dropped, so tremor cancels but slow deliberate movement still arrives |
-| `SWIPE_VEL` / `SWIPE_DIST` | 0.8 / 0.20 | Space-switch sensitivity |
+| `SWIPE_VEL` / `SWIPE_DIST` | 0.6 / 0.20 | Space-switch sensitivity. `SWIPE_VEL` lowered from 0.8 to 0.6 (2026-08-20 second follow-up) — see the amendment above — after `recordings/three_finger.jsonl` measured real swipes peaking at 0.79 frame-widths/sec, missing 0.8 by a hundredth |
+| Space-switch finger posture | exact `(True, True, True, False)` | replaced `sum(fingers_up) >= ARM_FINGERS_MIN` (2026-08-20 second follow-up); see the amendment above. An open palm satisfied the old rule and is the resting hand shape, so ordinary hand movement while armed could switch Spaces unintentionally |
 | `SWIPE_COOLDOWN_MS` | 800 | prevents multi-Space skips |
 | `DRY_RUN_FLUSH_S` | 1000 | max age of a coalesced `move` run in `--dry-run` output before it flushes |
 | `EURO_MIN_CUTOFF` / `EURO_BETA` | 0.4 / 0.7 | jitter vs. lag |

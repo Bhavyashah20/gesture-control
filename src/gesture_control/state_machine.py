@@ -29,6 +29,27 @@ def _can_enter_scroll(f: Features) -> bool:
     return _scroll_finger_shape(f) and f.thumb_tuck_ratio < config.THUMB_TUCK_MAX
 
 
+def _swipe_finger_shape(f: Features) -> bool:
+    """Exact three-finger posture for the Space-switch swipe: index, middle
+    and ring extended, pinky NOT extended -- matching the macOS trackpad
+    three-finger-swipe convention. Replaces the old "three or more fingers"
+    gate (sum(f.fingers_up) >= ARM_FINGERS_MIN), which an open palm also
+    satisfies -- and open palm is the resting hand shape, so that gate let
+    ordinary armed hand movement fire a spurious Space switch.
+
+    Measured against recordings/three_finger.jsonl (2026-08-20): finger
+    detection needed no change at all -- (True, True, True, False) is
+    already the dominant pattern at 267 of 448 present frames. Simulated
+    against the existing fixtures, the old >= 3 rule produced spurious
+    swipes in one_sweep, live_clicks, middle_pinch and reaching_past; this
+    exact posture produces none in any of them. See config.py's SWIPE_VEL
+    comment for the velocity threshold that had to change alongside it.
+
+    Distinguishable from the scroll posture (_scroll_finger_shape above) by
+    the ring finger: scroll needs it down, this needs it up."""
+    return f.fingers_up == (True, True, True, False)
+
+
 def _can_stay_in_scroll(f: Features) -> bool:
     """Loose: once in scroll, the thumb must exceed THUMB_TUCK_RELEASE --
     a much higher bar than THUMB_TUCK_MAX -- before scroll is left. A
@@ -214,7 +235,7 @@ class StateMachine:
 
         if self._swipe_last is not None and f.t - self._swipe_last < config.SWIPE_COOLDOWN_S:
             return []
-        if sum(f.fingers_up) < config.ARM_FINGERS_MIN or len(self._swipe_hist) < 2:
+        if not _swipe_finger_shape(f) or len(self._swipe_hist) < 2:
             return []
 
         t0, x0 = self._swipe_hist[0]
