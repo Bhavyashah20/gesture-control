@@ -407,15 +407,18 @@ considered "centred" and nothing scrolls, which is both how you stop
 scrolling and what absorbs hand tremor while holding still. `SCROLL_RATE_GAIN`
 converts the remaining offset into a scroll speed in px/sec — this is the
 constant you are most likely to want to adjust if scrolling feels too fast
-or too slow across the board. Both were sized from `recordings/scroll_attempt.jsonl`,
-where the usable vertical span during the scroll gesture is 0.22 of frame
-height, so a comfortable maximum deflection is roughly 0.11 either side of
-neutral: at `SCROLL_NEUTRAL_DEADZONE = 0.02` and `SCROLL_RATE_GAIN = 30000`,
-a 0.05 offset scrolls at roughly 900 px/sec, 0.10 at roughly 2400 px/sec, and
-0.15 (beyond the comfortable range) at roughly 3900 px/sec. If you change
-other constants and scroll stops working, replay
-`recordings/scroll_attempt.jsonl` and check the event count and total pixel
-output before retuning.
+or too slow across the board. Both are sized from real measurements on
+`recordings/scroll_hold.jsonl`, where the user's actual deflections from
+neutral run to a maximum of 0.041 frame-heights with a median of 0.012. The
+deadzone is set to 0.008 (roughly three times the hand tremor noise floor of
+0.0026), sitting well below the median to register normal holds while
+absorbing jitter. The gain is calibrated for a maximum useful deflection of
+about 0.04: at `SCROLL_NEUTRAL_DEADZONE = 0.008` and `SCROLL_RATE_GAIN = 60000`,
+a 0.012 offset (the median real deflection) scrolls at roughly 240 px/sec, 0.023
+(p75) at roughly 900 px/sec, 0.034 (p90) at roughly 1560 px/sec, and 0.041 (max)
+at roughly 1980 px/sec. If you change other constants and scroll stops working,
+replay `recordings/scroll_attempt.jsonl` and check the event count and total
+pixel output before retuning.
 
 ```bash
 .venv/bin/pytest tests/test_replay.py -v

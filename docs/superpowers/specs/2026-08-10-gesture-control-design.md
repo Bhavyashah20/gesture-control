@@ -247,16 +247,17 @@ scrolling and are removed along with it -- see "Amendment (2026-08-19):
 scroll gets its own acceleration curve" below for the design they replace.
 Two new constants take their place, both sized from the same 0.22
 frame-height span measured above, so a comfortable maximum deflection is
-roughly 0.11 either side of neutral:
+roughly 0.041 at most, with a median of 0.012:
 
 ```
-SCROLL_NEUTRAL_DEADZONE = 0.02   # frame-heights; inside this, no scrolling
-SCROLL_RATE_GAIN = 30000.0       # px/sec per frame-height of offset
+SCROLL_NEUTRAL_DEADZONE = 0.008   # frame-heights; inside this, no scrolling
+SCROLL_RATE_GAIN = 60000.0        # px/sec per frame-height of offset
 ```
 
-At these values: a 0.02 offset (the deadzone boundary) gives 0 px/sec; 0.05
-gives 900 px/sec; 0.10 gives 2400 px/sec; 0.15 (beyond the comfortable
-range) gives 3900 px/sec -- verified directly against the running state
+At these values (tuned from actual measurements on `recordings/scroll_hold.jsonl`):
+a 0.008 offset (the deadzone boundary) gives 0 px/sec; 0.012 (median real deflection)
+gives 240 px/sec; 0.023 (p75) gives 900 px/sec; 0.034 (p90) gives 1560 px/sec; 0.041
+(max) gives 1980 px/sec -- verified directly against the running state
 machine, not just the formula, and matching within filter-settling noise.
 
 **Replayed against the fixtures.** `recordings/scroll_attempt.jsonl` was
@@ -1433,8 +1434,8 @@ filter) are unchanged by this redesign.
 | `ARM_DWELL_MS` / `DISARM_MS` | 300 / 500 | gate responsiveness vs. stability |
 | `BASE_GAIN_PX` | 2000 | cursor travel per hand movement; raised from 1600 to increase reach from 560 px to 1000 px per hand-sweep, enabling edge access on 1470 px display with index-curl clutch covering the rest; cost: hand tremor amplified |
 | `ACCEL_MIN` / `ACCEL_MAX` | 0.5 / 2.5 | precision floor vs. reach ceiling; ACCEL_MIN raised from 0.35 to 0.5 to increase slow-movement reach from 560 px to 1000 px per hand-sweep |
-| `SCROLL_NEUTRAL_DEADZONE` | 0.02 | rate-based scrolling (added 2026-08-20, replacing `SCROLL_GAIN`/`scroll_accel`) — see "Amendment (2026-08-20)" above. Frame-heights of hand offset from the entry-recorded neutral before scrolling starts at all; inside it nothing scrolls, which is both how the user stops scrolling and what absorbs tremor while holding still |
-| `SCROLL_RATE_GAIN` | 30000.0 | px/sec of scroll speed per frame-height of offset beyond `SCROLL_NEUTRAL_DEADZONE` (added 2026-08-20). This is the constant most users will want to adjust for scroll feeling too fast or too slow across the board. Both this and the deadzone above were sized from `recordings/scroll_attempt.jsonl`'s measured 0.22 frame-height usable vertical span, so a comfortable maximum deflection is roughly 0.11 either side of neutral: 0.05 offset ≈ 900 px/sec, 0.10 ≈ 2400 px/sec, 0.15 ≈ 3900 px/sec |
+| `SCROLL_NEUTRAL_DEADZONE` | 0.008 | rate-based scrolling (added 2026-08-20, resized 2026-08-20 follow-up, replacing `SCROLL_GAIN`/`scroll_accel`) — see "Amendment (2026-08-20)" above. Frame-heights of hand offset from the entry-recorded neutral before scrolling starts at all; inside it nothing scrolls, which is both how the user stops scrolling and what absorbs tremor while holding still. Tuned from `recordings/scroll_hold.jsonl` measurements: user's actual deflections run to 0.041 max with median 0.012; deadzone at 0.008 sits well below median and roughly 3x above hand tremor noise floor |
+| `SCROLL_RATE_GAIN` | 60000.0 | px/sec of scroll speed per frame-height of offset beyond `SCROLL_NEUTRAL_DEADZONE` (added 2026-08-20, resized 2026-08-20 follow-up). This is the constant most users will want to adjust for scroll feeling too fast or too slow across the board. Tuned from `recordings/scroll_hold.jsonl` measurements for maximum useful deflection ~0.04: 0.012 offset ≈ 240 px/sec, 0.023 ≈ 900 px/sec, 0.034 ≈ 1560 px/sec, 0.041 ≈ 1980 px/sec |
 | `SCROLL_MIN_PX` | 1.0 | deadband below which no single scroll event is emitted; unchanged by the 2026-08-20 rate-based redesign, now applied to the per-frame `speed × dt` amount instead of a raw displacement |
 | `THUMB_TUCK_MAX` | 0.70 | scroll entry additionally requires `thumb_tuck_ratio` below this (added 2026-08-19) — see "Amendment (2026-08-19): scroll requires a tucked thumb" above. Keeps a middle-pinch double-click, which extends the thumb to meet the middle fingertip, from being misread as scroll. Measured medians: scroll 0.55, middle-pinch 0.86, index clicks 0.90; 0.70 keeps 195 of 260 genuine scroll frames while rejecting every colliding frame |
 | `THUMB_TUCK_RELEASE` | 0.95 | scroll exit uses this instead of `THUMB_TUCK_MAX` (added 2026-08-19 follow-up) — see "Amendment (2026-08-19): scroll thumb gate made asymmetric" above. Must stay above `THUMB_TUCK_MAX` (asserted by `test_thumb_tuck_thresholds_have_hysteresis_gap`). Absorbs a momentary thumb un-tuck mid-scroll that would otherwise drop into `Tracking` and let a stray pinch reading fire an unintended click; a genuine untuck past 0.95 still exits. Does not, on its own, remove every spurious click observed on `recordings/scroll_attempt.jsonl` — some come from a different mechanism (`Scroll` failing to *enter* during a curl/pinch sequence where the thumb never drops below `THUMB_TUCK_MAX`), which this constant cannot address |

@@ -167,10 +167,20 @@ ACCEL_VREF = 1.2
 # speed (px/sec) = sign(offset) * (abs(offset) - SCROLL_NEUTRAL_DEADZONE) *
 # SCROLL_RATE_GAIN, and the per-frame scroll amount is speed * dt.
 #
-# Sized from the same 0.22 frame-height span above, so a comfortable
-# maximum deflection is roughly 0.11 either side of neutral.
-SCROLL_NEUTRAL_DEADZONE = 0.02   # frame-heights; inside this, no scrolling
-SCROLL_RATE_GAIN = 30000.0       # px/sec per frame-height of offset
+# Measured from recordings/scroll_hold.jsonl (user performing the gesture
+# correctly for 15 s), actual vertical deflections from neutral run to a
+# maximum of 0.041 frame-heights, with a median of 0.012, p75 0.023, p90
+# 0.034. Initial sizing assumed deflections up to 0.11 (roughly three times
+# larger) and set SCROLL_NEUTRAL_DEADZONE=0.02 and SCROLL_RATE_GAIN=30000,
+# which swallowed 66% of the gesture with no output. The deadzone must sit
+# well below the median (0.012) to register normal holds, while still
+# exceeding hand tremor (measured at ~0.0026 frame-height/frame jitter), so
+# 0.008 is roughly three times the noise floor. The gain is scaled for a
+# maximum useful deflection of 0.04 (vs the original assumption of 0.11),
+# yielding expected scroll speeds of: median 240 px/sec, p75 900, p90 1560,
+# max 1980.
+SCROLL_NEUTRAL_DEADZONE = 0.008   # frame-heights; inside this, no scrolling
+SCROLL_RATE_GAIN = 60000.0        # px/sec per frame-height of offset
 SCROLL_DWELL_S = 0.200
 SCROLL_MIN_PX = 1.0
 
