@@ -8,6 +8,15 @@ Point your index finger and the cursor follows your hand. Pinching index-to-thum
 is a plain mouse button — down when you pinch, up when you release — so macOS
 decides click versus drag exactly as it would for a physical mouse.
 
+## Demo
+
+[![Ten seconds of talking with your hands produces nothing, then a real pinch-drag](docs/demo/demo.gif)](docs/demo/demo.mp4)
+
+▶️ [Watch the full video with sound](docs/demo/demo.mp4) (22 s). Every hand pose, state
+change and count in it is replayed from the fixtures in `recordings/` through the same
+pure core the tests use — it is not live capture, and nothing is staged. Each shot names
+the fixture it came from.
+
 ## Gestures
 
 | Gesture | Action |

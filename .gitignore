@@ -4,3 +4,6 @@ __pycache__/
 models/*.task
 *.egg-info/
 .DS_Store
+
+# brag video working files (bundled music must not be republished)
+brag-output/
